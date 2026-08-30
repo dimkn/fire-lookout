@@ -190,7 +190,7 @@ generated code differs. Commit regenerated code alongside the spec change.
 ## 7. Versioning workflow
 
 - The whole tool has **one semver version**, stored in the root **`VERSION`** file
-  (currently `0.0.0`).
+  (currently `0.0.1`).
 - It is the single source of truth:
   - **Backend** — injected at build time via `-ldflags "-X main.version=$(cat VERSION)"`.
   - **Frontend** — injected at build time via a Vite `define` / env var.
@@ -224,7 +224,9 @@ generated code differs. Commit regenerated code alongside the spec change.
 **Backend** (`cd backend`)
 - Build: `go build -ldflags "-X main.version=$(cat ../VERSION)" -o bin/status-page ./cmd/status-page` _(TBD)_
 - Test: `go test ./...` _(TBD)_
-- Vet/format: `go vet ./...` / `gofmt -l .` _(TBD)_
+- Lint: `golangci-lint run` (config: `backend/.golangci.yml`; requires golangci-lint ≥ v2;
+  subsumes `go vet`. Enforces hexagonal import boundaries via `depguard`.)
+- Format: `gofumpt -l -w .` (import grouping via `gci` runs inside `golangci-lint run`)
 - Generate server from OpenAPI: `oapi-codegen ...` _(TBD)_
 - Apply migrations: `goose -dir internal/adapters/storage/migrations sqlite ./data/fire-lookout.db up` _(TBD)_
 

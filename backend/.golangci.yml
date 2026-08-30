@@ -1,0 +1,85 @@
+# golangci-lint configuration (v2 schema; requires golangci-lint >= v2).
+# Verify the schema with:  golangci-lint config verify
+# Run with:               golangci-lint run
+#
+# Linter policy (see AGENTS.md §4/§8): correctness + architecture boundaries +
+# maintainability, plus gosec. Test-only linters are intentionally omitted for now.
+version: "2"
+
+linters:
+  # "standard" = errcheck, govet, ineffassign, staticcheck, unused.
+  default: standard
+  enable:
+    # --- Tier 1: correctness (the ones that pay off in THIS codebase) ---
+    - bodyclose      # HTTP response bodies must be closed (feed fetcher)
+    - sqlclosecheck  # sql.Rows / sql.Stmt must be closed (storage adapter, raw database/sql)
+    - rowserrcheck   # rows.Err() must be checked after iteration
+    - noctx          # outbound HTTP must carry a context.Context (poller)
+    - errorlint      # enforce %w / errors.Is / errors.As wrapping convention (§4)
+    # --- Tier 2: architecture (hexagonal import boundaries) ---
+    - depguard
+    # --- Tier 3: maintainability / style ---
+    - gocritic
+    - revive
+    - unconvert
+    - unparam
+    - misspell
+    - godot
+    # --- Security ---
+    - gosec
+
+  settings:
+    depguard:
+      rules:
+        # domain/ is the core: it may import ONLY the standard library (Golden rule; §4).
+        domain:
+          files:
+            - "**/internal/domain/**"
+            - "internal/domain/**"
+          allow:
+            - $gostd
+            - fire-lookout/backend/internal/domain
+        # application/ orchestrates ports; it depends on domain only, never on adapters.
+        application:
+          files:
+            - "**/internal/application/**"
+            - "internal/application/**"
+          allow:
+            - $gostd
+            - fire-lookout/backend/internal/domain
+            - fire-lookout/backend/internal/application
+    gosec:
+      excludes:
+        - G104  # unhandled errors — already covered by errcheck (avoid double-reporting)
+        - G404  # weak RNG — not security-relevant for this tool
+        # G201/G202 (SQL built via string concatenation) stay ON — the point of raw SQL.
+
+  exclusions:
+    # Skip files carrying the "Code generated ... DO NOT EDIT." header (oapi-codegen output).
+    generated: lax
+    rules:
+      - path: '\.gen\.go$'
+        linters:
+          - depguard
+          - revive
+          - gocritic
+          - errcheck
+          - unparam
+          - godot
+      - path: '_test\.go$'
+        linters:
+          - gosec
+          - unparam
+
+formatters:
+  enable:
+    - gofumpt  # stricter gofmt superset
+    - gci      # grouped, ordered imports: stdlib / third-party / this module
+  settings:
+    gci:
+      sections:
+        - standard
+        - default
+        - localmodule
+  exclusions:
+    generated: lax
