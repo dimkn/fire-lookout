@@ -108,12 +108,35 @@ hand-written.
   happens only in `cmd/status-page/main.go`.
 - **HTTP server:** stdlib `net/http` only. No web framework (no gin/echo/chi).
 - **Storage:** a single SQLite database file under a configurable data directory
-  (defaults to `./data/fire-lookout.db`, gitignored), opened in **WAL mode**. Accessed through
-  stdlib `database/sql` with the `modernc.org/sqlite` driver — **no ORM**. SQLite (WAL) plus
-  the `database/sql` pool handle concurrency, so no manual serialization is needed. Schema is
-  managed by versioned SQL migrations under `internal/adapters/storage/migrations/` (embedded
-  via `embed.FS`) applied on startup with `goose`. All reads/writes go through the repository
-  adapter — nothing else touches the database.
+  (defaults to `./data/fire-lookout.db`, gitignored), opened in **WAL mode** with **foreign
+  keys enforced** — both pinned in the DSN, which FK `ON DELETE` actions depend on:
+  `file:./data/fire-lookout.db?_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)`. Accessed
+  through stdlib `database/sql` with the `modernc.org/sqlite` driver — **no ORM**. SQLite
+  (WAL) plus the `database/sql` pool handle concurrency, so no manual serialization is needed.
+  Schema is managed by versioned SQL migrations under `internal/adapters/storage/migrations/`
+  (embedded via `embed.FS`) applied on startup with `goose`. All reads/writes go through the
+  repository adapter — nothing else touches the database.
+- **Data model.** The authoritative schema is the goose migration in
+  `internal/adapters/storage/migrations/` (starting at `00001_init_schema.sql`); the bullets
+  below only summarize intent. Three tables:
+  - `feed_group` — arbitrary user buckets. Row **`id = 0` is a seeded, undeletable
+    `Ungrouped` sentinel** (a `BEFORE DELETE` trigger guards it).
+  - `feed` — one row per subscribed RSS/Atom endpoint (`url` UNIQUE). `group_id` is
+    `NOT NULL DEFAULT 0` referencing `feed_group(id)` with `ON DELETE SET DEFAULT`, so
+    deleting a group re-parents its feeds to `Ungrouped` rather than orphaning or deleting
+    them. Health bookkeeping is a distinct trio: `last_fetched_at` (attempt),
+    `last_success_at` (success), `last_error`.
+  - `feed_item` — one row per incident/entry, keyed `UNIQUE(feed_id, guid)` for idempotent
+    upserts (`ON CONFLICT(feed_id, guid) DO UPDATE`) across polls. Stores raw `content_html`
+    as the source of truth plus a best-effort, nullable `current_status`; per-update
+    timelines are intentionally **not** parsed (yet).
+  - **Timestamps:** every time column is TEXT, RFC3339, **UTC**, second-precision; normalize
+    on write (`t.UTC().Format(time.RFC3339)`). `group_id` is a plain `int64` in Go (`0` =
+    ungrouped), never a nullable pointer.
+  - **Retention:** after each successful poll, prune `feed_item` older than a configurable
+    window (default ~7 days); `feed`/`feed_group` rows are never pruned.
+  - **Fetching:** the poller always re-fetches and re-parses — no HTTP conditional-GET
+    (ETag/Last-Modified) bookkeeping yet; add it if a provider rate-limits.
 - **Errors:** return wrapped errors (`fmt.Errorf("...: %w", err)`); the httpapi adapter
   maps domain errors to HTTP status codes.
 - **Generated code:** lives beside its adapter and is named `*.gen.go`. Regenerated, never

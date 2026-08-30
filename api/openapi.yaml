@@ -1,0 +1,502 @@
+openapi: 3.0.3
+
+info:
+  title: fire-lookout status page API
+  description: >-
+    Backend↔frontend contract for the local status-page reader. This is the single
+    source of truth (AGENTS.md §3, §6): the Go server stubs and the TypeScript client
+    are generated from this file and must never be hand-edited.
+  version: 0.0.0 # tracks the root VERSION file (AGENTS.md §7)
+
+servers:
+  - url: /api
+    description: Mounted under /api by the backend.
+
+tags:
+  - name: feeds
+    description: Subscriptions to RSS/Atom status feeds and their parsed items.
+  - name: groups
+    description: Arbitrary user-defined buckets of feeds.
+
+paths:
+  /feeds:
+    get:
+      tags: [feeds]
+      operationId: listFeeds
+      summary: List subscribed feeds.
+      parameters:
+        - name: group_id
+          in: query
+          description: Restrict to feeds in this group (0 == Ungrouped).
+          required: false
+          schema:
+            type: integer
+            format: int64
+      responses:
+        '200':
+          description: The feeds, each with derived current status and health.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Feed'
+    post:
+      tags: [feeds]
+      operationId: subscribeFeed
+      summary: Subscribe to a new feed.
+      description: >-
+        Validates the URL by fetching and parsing it once. Fails with 422 if the URL is
+        unreachable or is not a valid RSS/Atom feed, and 409 if it is already subscribed.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubscribeFeedRequest'
+      responses:
+        '201':
+          description: The newly created feed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Feed'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /feeds/{feedId}:
+    parameters:
+      - $ref: '#/components/parameters/FeedId'
+    get:
+      tags: [feeds]
+      operationId: getFeed
+      summary: Get a single feed.
+      responses:
+        '200':
+          description: The feed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Feed'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [feeds]
+      operationId: updateFeed
+      summary: Update a feed (title, group, cadence, enabled).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateFeedRequest'
+      responses:
+        '200':
+          description: The updated feed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Feed'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [feeds]
+      operationId: deleteFeed
+      summary: Unsubscribe from a feed. Cascades to its stored items.
+      responses:
+        '204':
+          description: Deleted.
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /feeds/{feedId}/items:
+    parameters:
+      - $ref: '#/components/parameters/FeedId'
+    get:
+      tags: [feeds]
+      operationId: listFeedItems
+      summary: List a feed's status items (incidents), newest first.
+      parameters:
+        - name: since
+          in: query
+          description: Only items published at or after this RFC3339 timestamp.
+          required: false
+          schema:
+            type: string
+            format: date-time
+        - name: limit
+          in: query
+          description: Maximum number of items to return.
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+      responses:
+        '200':
+          description: The status items, newest first.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/StatusItem'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /feeds/{feedId}/refresh:
+    parameters:
+      - $ref: '#/components/parameters/FeedId'
+    post:
+      tags: [feeds]
+      operationId: refreshFeed
+      summary: Trigger an immediate poll of this feed.
+      responses:
+        '200':
+          description: The feed after the refresh, with updated health fields.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Feed'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /groups:
+    get:
+      tags: [groups]
+      operationId: listGroups
+      summary: List all groups (including the reserved Ungrouped group), by position.
+      responses:
+        '200':
+          description: The groups.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Group'
+    post:
+      tags: [groups]
+      operationId: createGroup
+      summary: Create a new group.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateGroupRequest'
+      responses:
+        '201':
+          description: The newly created group.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Group'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /groups/{groupId}:
+    parameters:
+      - $ref: '#/components/parameters/GroupId'
+    get:
+      tags: [groups]
+      operationId: getGroup
+      summary: Get a single group.
+      responses:
+        '200':
+          description: The group.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Group'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [groups]
+      operationId: updateGroup
+      summary: Rename or reorder a group.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateGroupRequest'
+      responses:
+        '200':
+          description: The updated group.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Group'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+    delete:
+      tags: [groups]
+      operationId: deleteGroup
+      summary: Delete a group. Its feeds are reparented to Ungrouped.
+      description: >-
+        The reserved Ungrouped group (id 0) cannot be deleted and returns 400.
+      responses:
+        '204':
+          description: Deleted; member feeds moved to Ungrouped.
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+components:
+  parameters:
+    FeedId:
+      name: feedId
+      in: path
+      required: true
+      description: Feed identifier.
+      schema:
+        type: integer
+        format: int64
+    GroupId:
+      name: groupId
+      in: path
+      required: true
+      description: Group identifier (0 == Ungrouped).
+      schema:
+        type: integer
+        format: int64
+
+  responses:
+    BadRequest:
+      description: The request was malformed.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: The resource does not exist.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Conflict:
+      description: The resource conflicts with an existing one (e.g. duplicate URL or name).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    UnprocessableEntity:
+      description: The feed URL is unreachable or is not a valid RSS/Atom feed.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+  schemas:
+    Status:
+      type: string
+      description: >-
+        Normalized, best-effort incident state derived from the feed content. May be
+        "unknown" for feeds that don't follow the Atlassian Statuspage convention.
+      enum:
+        - investigating
+        - identified
+        - monitoring
+        - resolved
+        - maintenance
+        - unknown
+
+    Group:
+      type: object
+      required: [id, name, position]
+      properties:
+        id:
+          type: integer
+          format: int64
+          description: 0 is the reserved, undeletable Ungrouped group.
+          example: 3
+        name:
+          type: string
+          example: Dev tools
+        position:
+          type: integer
+          description: Display order.
+          example: 0
+
+    Feed:
+      type: object
+      required: [id, url, title, group_id, enabled, refresh_interval_sec, created_at, updated_at]
+      properties:
+        id:
+          type: integer
+          format: int64
+        url:
+          type: string
+          format: uri
+          example: https://www.githubstatus.com/history.atom
+        title:
+          type: string
+          example: GitHub Status - Incident History
+        group_id:
+          type: integer
+          format: int64
+          default: 0
+          description: 0 == Ungrouped.
+        enabled:
+          type: boolean
+          default: true
+          description: When false, the feed is not polled.
+        refresh_interval_sec:
+          type: integer
+          minimum: 30
+          default: 300
+          description: Poll cadence in seconds.
+        current_status:
+          description: Derived from the most recent incident; null when there are no items.
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/Status'
+        last_fetched_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Last poll attempt (RFC3339 UTC); null until the first poll.
+        last_success_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Last successful poll (RFC3339 UTC); null until the first success.
+        last_error:
+          type: string
+          nullable: true
+          description: Last failure message; null when healthy.
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    StatusItem:
+      type: object
+      required: [id, feed_id, guid, title, published_at, updated_at, status, fetched_at]
+      properties:
+        id:
+          type: integer
+          format: int64
+        feed_id:
+          type: integer
+          format: int64
+        guid:
+          type: string
+          description: Stable external id (Atom <id> / RSS <guid> / fallback link).
+        title:
+          type: string
+        link:
+          type: string
+          format: uri
+          nullable: true
+          description: Permalink to the incident.
+        published_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        content_html:
+          type: string
+          nullable: true
+          description: Raw entry body (all updates), preserved verbatim.
+        content_text:
+          type: string
+          nullable: true
+          description: Stripped plaintext, for preview/search.
+        status:
+          $ref: '#/components/schemas/Status'
+        fetched_at:
+          type: string
+          format: date-time
+
+    SubscribeFeedRequest:
+      type: object
+      required: [url]
+      properties:
+        url:
+          type: string
+          format: uri
+          description: The RSS/Atom endpoint to subscribe to.
+          example: https://www.githubstatus.com/history.atom
+        title:
+          type: string
+          description: Optional display name; defaults to the feed's own <title>.
+        group_id:
+          type: integer
+          format: int64
+          default: 0
+          description: 0 == Ungrouped. Must reference an existing group.
+        refresh_interval_sec:
+          type: integer
+          minimum: 30
+          default: 300
+        enabled:
+          type: boolean
+          default: true
+
+    UpdateFeedRequest:
+      type: object
+      description: Partial update; omitted fields are left unchanged.
+      properties:
+        title:
+          type: string
+        group_id:
+          type: integer
+          format: int64
+        refresh_interval_sec:
+          type: integer
+          minimum: 30
+        enabled:
+          type: boolean
+
+    CreateGroupRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          example: Dev tools
+        position:
+          type: integer
+          default: 0
+
+    UpdateGroupRequest:
+      type: object
+      description: Partial update; omitted fields are left unchanged.
+      properties:
+        name:
+          type: string
+        position:
+          type: integer
+
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          description: Stable, machine-readable error code.
+          example: feed_unreachable
+        message:
+          type: string
+          description: Human-readable explanation.
