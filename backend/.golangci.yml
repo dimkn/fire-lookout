@@ -76,6 +76,11 @@ formatters:
     - gofumpt  # stricter gofmt superset
     - gci      # grouped, ordered imports: stdlib / third-party / this module
   settings:
+    gofumpt:
+      # Required: the module path has no dot in its first segment, so without this
+      # gofumpt's "dotless means stdlib" heuristic files fire-lookout/backend/... into the
+      # standard-library group and fights gci over the import blocks.
+      module-path: fire-lookout/backend
     gci:
       sections:
         - standard

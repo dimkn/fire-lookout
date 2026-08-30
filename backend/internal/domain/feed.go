@@ -15,6 +15,15 @@ const (
 	RetentionWindow = 7 * 24 * time.Hour
 )
 
+// How many status items a single listing may return. Mirrors the bounds published in
+// api/openapi.yaml for listFeedItems.
+const (
+	// DefaultItemLimit applies when a caller asks for no particular number.
+	DefaultItemLimit = 50
+	// MaxItemLimit caps what a caller may ask for, however large the request.
+	MaxItemLimit = 200
+)
+
 // Group is an arbitrary, user-defined bucket of feeds ("Dev tools", "Analytics", ...).
 // The reserved Group with ID == UngroupedID always exists and cannot be deleted.
 type Group struct {
@@ -57,4 +66,18 @@ type StatusItem struct {
 	ContentText string // stripped plaintext, for preview/search
 	Status      Status
 	FetchedAt   time.Time // when we last stored/updated this item
+}
+
+// LatestTimestamp is when this item last said anything: the newer of the provider's
+// published/updated timestamps, falling back to our own FetchedAt for feeds that ship
+// neither. Zero only when the item carries no timestamp at all.
+func (i StatusItem) LatestTimestamp() time.Time {
+	newest := i.PublishedAt
+	if i.UpdatedAt.After(newest) {
+		newest = i.UpdatedAt
+	}
+	if newest.IsZero() {
+		return i.FetchedAt
+	}
+	return newest
 }

@@ -1,0 +1,5 @@
+# Generated from api/openapi.yaml — never hand-formatted (AGENTS.md §10).
+src/api/schema.gen.ts
+
+dist/
+coverage/

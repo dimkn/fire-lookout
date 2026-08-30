@@ -8,6 +8,7 @@ package domain
 // often resolve to StatusUnknown, in which case the raw content is the source of truth.
 type Status string
 
+// The incident states we recognize, mirroring the Status enum in api/openapi.yaml.
 const (
 	StatusInvestigating Status = "investigating"
 	StatusIdentified    Status = "identified"

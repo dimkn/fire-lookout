@@ -6,19 +6,41 @@ info:
     Backend↔frontend contract for the local status-page reader. This is the single
     source of truth (AGENTS.md §3, §6): the Go server stubs and the TypeScript client
     are generated from this file and must never be hand-edited.
-  version: 0.0.1 # tracks the root VERSION file (AGENTS.md §7)
+  version: 0.1.0 # tracks the root VERSION file (AGENTS.md §7)
 
 servers:
   - url: /api
     description: Mounted under /api by the backend.
 
 tags:
+  - name: overview
+    description: The main page read model — every system's latest known status.
   - name: feeds
     description: Subscriptions to RSS/Atom status feeds and their parsed items.
   - name: groups
     description: Arbitrary user-defined buckets of feeds.
 
 paths:
+  /overview:
+    get:
+      tags: [overview]
+      operationId: getOverview
+      summary: Latest known status of every subscribed system.
+      description: >-
+        Backs the main page: one entry per subscribed feed, carrying the derived
+        traffic-light indicator and enough metadata for a collapsed row. Deliberately
+        takes no parameters and carries no incidents — a card fetches its own detail
+        from /feeds/{feedId}/items when it is expanded.
+      responses:
+        '200':
+          description: One entry per subscribed system.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/SystemOverview'
+
   /feeds:
     get:
       tags: [feeds]
@@ -318,6 +340,35 @@ components:
         - maintenance
         - unknown
 
+    Indicator:
+      type: string
+      description: >-
+        The traffic-light shown next to a system, derived server-side from its most
+        recent incident: operational (green), degraded (yellow), outage (red), or
+        unknown (grey — never polled, or the status could not be derived).
+      enum:
+        - operational
+        - degraded
+        - outage
+        - unknown
+
+    SystemOverview:
+      type: object
+      description: >-
+        One system as the main page needs it: the feed itself plus the derived
+        indicator. Incidents are intentionally absent — see /feeds/{feedId}/items.
+      required: [feed, indicator]
+      properties:
+        feed:
+          $ref: '#/components/schemas/Feed'
+        indicator:
+          $ref: '#/components/schemas/Indicator'
+        last_updated_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Newest incident's timestamp; null when the system has no incidents.
+
     Group:
       type: object
       required: [id, name, position]
@@ -391,7 +442,7 @@ components:
 
     StatusItem:
       type: object
-      required: [id, feed_id, guid, title, published_at, updated_at, status, fetched_at]
+      required: [id, feed_id, guid, title, status, fetched_at]
       properties:
         id:
           type: integer
@@ -412,9 +463,15 @@ components:
         published_at:
           type: string
           format: date-time
+          nullable: true
+          description: >-
+            When the provider published the entry; null for feeds that ship no
+            timestamps (fetched_at is then the only thing we know).
         updated_at:
           type: string
           format: date-time
+          nullable: true
+          description: When the provider last revised the entry; null when it never said.
         content_html:
           type: string
           nullable: true
