@@ -22,16 +22,22 @@ type StatusProvider interface {
 	FeedItems(ctx context.Context, feedID int64, since *time.Time, limit int) ([]domain.StatusItem, error)
 }
 
+// FeedSubscriber is the write side this adapter needs.
+type FeedSubscriber interface {
+	SubscribeFeed(ctx context.Context, in domain.SubscribeInput) (domain.Feed, error)
+}
+
 // Server implements the generated ServerInterface.
 type Server struct {
-	status StatusProvider
+	status     StatusProvider
+	subscriber FeedSubscriber
 }
 
 var _ ServerInterface = (*Server)(nil)
 
 // NewServer wires the handlers to the application.
-func NewServer(status StatusProvider) *Server {
-	return &Server{status: status}
+func NewServer(status StatusProvider, subscriber FeedSubscriber) *Server {
+	return &Server{status: status, subscriber: subscriber}
 }
 
 // NewRouter mounts the generated routes under baseURL (e.g. "/api") and reports
@@ -79,6 +85,57 @@ func (s *Server) ListFeedItems(w http.ResponseWriter, r *http.Request, feedID Fe
 		out = append(out, toStatusItem(item))
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// SubscribeFeed adds a feed. The body is validated, the endpoint is fetched once to prove
+// it is really a feed, and only then is anything stored (see the application use case).
+func (s *Server) SubscribeFeed(w http.ResponseWriter, r *http.Request) {
+	var body SubscribeFeedJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "The request body is not valid JSON.")
+		return
+	}
+
+	in := domain.SubscribeInput{
+		URL:     body.Url,
+		Title:   body.Title,
+		Enabled: body.Enabled,
+	}
+	if body.GroupId != nil {
+		in.GroupID = *body.GroupId
+	}
+	if body.RefreshIntervalSec != nil {
+		in.RefreshInterval = time.Duration(*body.RefreshIntervalSec) * time.Second
+	}
+
+	feed, err := s.subscriber.SubscribeFeed(r.Context(), in)
+	if err != nil {
+		failSubscribe(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, toFeed(feed))
+}
+
+// failSubscribe maps the subscribe use case's errors onto the responses the contract
+// publishes for POST /feeds. Every message here is written to be shown to a user: the
+// frontend puts it straight into a banner.
+func failSubscribe(w http.ResponseWriter, r *http.Request, err error) {
+	var invalid domain.ValidationError
+	switch {
+	case errors.As(err, &invalid):
+		writeError(w, http.StatusBadRequest, "invalid_input", invalid.Message)
+	case errors.Is(err, domain.ErrDuplicateURL):
+		writeError(w, http.StatusConflict, "feed_exists",
+			"That RSS link is already on the dashboard.")
+	case errors.Is(err, domain.ErrDuplicateTitle):
+		writeError(w, http.StatusConflict, "name_exists",
+			"A system with that name already exists. Pick a different name.")
+	case errors.Is(err, domain.ErrFeedUnreachable):
+		writeError(w, http.StatusUnprocessableEntity, "feed_unreachable",
+			"Could not read an RSS or Atom feed at that link. Check the URL and try again.")
+	default:
+		fail(w, r, err)
+	}
 }
 
 func toSystemOverview(o domain.SystemOverview) SystemOverview {

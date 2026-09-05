@@ -1,16 +1,17 @@
 <script setup lang="ts">
 import DotsLoader from '@/components/DotsLoader/DotsLoader.vue'
 
-const props = withDefaults(defineProps<{ label: string; loading?: boolean }>(), {
-  loading: false,
-})
+const props = withDefaults(
+  defineProps<{ label: string; loading?: boolean; disabled?: boolean }>(),
+  { loading: false, disabled: false },
+)
 
 const emit = defineEmits<{ click: [] }>()
 
 function onClick() {
-  // `disabled` already blocks this; the guard keeps the contract explicit for callers
+  // The attribute already blocks this; the guard keeps the contract explicit for callers
   // that drive the component programmatically.
-  if (props.loading) {
+  if (props.loading || props.disabled) {
     return
   }
   emit('click')
@@ -21,7 +22,7 @@ function onClick() {
   <button
     class="app-button"
     type="button"
-    :disabled="loading"
+    :disabled="loading || disabled"
     :aria-busy="loading"
     @click="onClick"
   >
@@ -55,6 +56,13 @@ function onClick() {
 
 .app-button:disabled {
   cursor: default;
+}
+
+/* Only an unavailable button looks unavailable — a loading one keeps its resting look,
+   since the loader already says what is happening. */
+.app-button:disabled:not([aria-busy='true']) {
+  color: var(--text-muted);
+  opacity: 0.65;
 }
 
 .app-button:focus-visible {

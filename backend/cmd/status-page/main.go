@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"fire-lookout/backend/internal/adapters/feed"
 	"fire-lookout/backend/internal/adapters/httpapi"
 	"fire-lookout/backend/internal/adapters/storage"
 	"fire-lookout/backend/internal/application"
@@ -58,8 +59,14 @@ func run(addr, dbPath string) error {
 		return err
 	}
 
+	repo := storage.NewRepository(db)
+	fetcher := feed.NewFetcher(feed.DefaultTimeout)
+
 	handler := httpapi.NewRouter(
-		httpapi.NewServer(application.NewStatusService(storage.NewRepository(db))),
+		httpapi.NewServer(
+			application.NewStatusService(repo),
+			application.NewSubscriptionService(repo, fetcher),
+		),
 		"/api",
 	)
 

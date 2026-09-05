@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"fire-lookout/backend/internal/domain"
@@ -111,6 +112,76 @@ func (r *Repository) ListItems(ctx context.Context, feedID int64, since *time.Ti
 	defer func() { _ = rows.Close() }()
 
 	return collectItems(rows)
+}
+
+// FeedExistsByURL reports whether this exact url is already subscribed.
+func (r *Repository) FeedExistsByURL(ctx context.Context, url string) (bool, error) {
+	var exists bool
+	err := r.db.QueryRowContext(ctx,
+		`SELECT EXISTS(SELECT 1 FROM feed WHERE url = ?)`, url).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("check feed url: %w", err)
+	}
+	return exists, nil
+}
+
+// FeedExistsByTitle reports whether a feed already uses this name. COLLATE NOCASE matches
+// the unique index, so the answer here and the constraint below can never disagree.
+func (r *Repository) FeedExistsByTitle(ctx context.Context, title string) (bool, error) {
+	var exists bool
+	err := r.db.QueryRowContext(ctx,
+		`SELECT EXISTS(SELECT 1 FROM feed WHERE title = ? COLLATE NOCASE)`, title).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("check feed title: %w", err)
+	}
+	return exists, nil
+}
+
+// CreateFeed stores a new feed. The timestamps are stamped here, in the one place that
+// owns the format every time column uses.
+func (r *Repository) CreateFeed(ctx context.Context, feed domain.Feed) (domain.Feed, error) {
+	now := time.Now().UTC().Truncate(time.Second)
+	stamp := formatTime(now)
+
+	enabled := 0
+	if feed.Enabled {
+		enabled = 1
+	}
+
+	res, err := r.db.ExecContext(ctx, `
+		INSERT INTO feed (url, title, group_id, enabled, refresh_interval_sec, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		feed.URL, feed.Title, feed.GroupID, enabled,
+		int64(feed.RefreshInterval.Seconds()), stamp, stamp)
+	if err != nil {
+		return domain.Feed{}, conflictOrError(err)
+	}
+
+	id, err := res.LastInsertId()
+	if err != nil {
+		return domain.Feed{}, fmt.Errorf("read new feed id: %w", err)
+	}
+
+	created := feed
+	created.ID = id
+	created.CreatedAt = now
+	created.UpdatedAt = now
+	return created, nil
+}
+
+// conflictOrError translates a unique-constraint violation into the matching domain
+// sentinel. The driver only reports these as message text, so the column name is matched
+// on a substring — the alternative would be a second query to work out which index fired.
+func conflictOrError(err error) error {
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "feed.url"):
+		return fmt.Errorf("insert feed: %w", domain.ErrDuplicateURL)
+	case strings.Contains(msg, "idx_feed_title_unique"), strings.Contains(msg, "feed.title"):
+		return fmt.Errorf("insert feed: %w", domain.ErrDuplicateTitle)
+	default:
+		return fmt.Errorf("insert feed: %w", err)
+	}
 }
 
 // scanner is what sql.Row and sql.Rows have in common.

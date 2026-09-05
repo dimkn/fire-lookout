@@ -1,6 +1,14 @@
 package domain
 
-import "time"
+import (
+	"net/url"
+	"strings"
+	"time"
+)
+
+// MinRefreshInterval is the fastest poll cadence a feed may be given, mirroring the bound
+// published in api/openapi.yaml.
+const MinRefreshInterval = 30 * time.Second
 
 // SubscribeInput is what a user provides to subscribe to a new feed. Only URL is
 // required; empty/zero fields fall back to defaults or the feed's own metadata. The
@@ -11,6 +19,65 @@ type SubscribeInput struct {
 	GroupID         int64         // optional; 0 == Ungrouped
 	RefreshInterval time.Duration // optional; 0 => DefaultRefreshInterval
 	Enabled         *bool         // optional; nil => true
+}
+
+// Sanitize trims every string field, fills in the defaults for omitted values, and reports
+// a ValidationError when what remains cannot be accepted. Trimming happens before the
+// emptiness checks on purpose: whitespace is not a name.
+//
+// Messages are written for the person who typed the value — the HTTP adapter shows them
+// verbatim.
+func (in SubscribeInput) Sanitize() (SubscribeInput, error) {
+	out := in
+	out.Title = strings.TrimSpace(in.Title)
+	out.URL = strings.TrimSpace(in.URL)
+
+	if out.Title == "" {
+		return SubscribeInput{}, ValidationError{Field: "title", Message: "Name must not be empty."}
+	}
+	if out.URL == "" {
+		return SubscribeInput{}, ValidationError{Field: "url", Message: "RSS link must not be empty."}
+	}
+	if err := validateFeedURL(out.URL); err != nil {
+		return SubscribeInput{}, err
+	}
+
+	switch {
+	case out.RefreshInterval == 0:
+		out.RefreshInterval = DefaultRefreshInterval
+	case out.RefreshInterval < MinRefreshInterval:
+		return SubscribeInput{}, ValidationError{
+			Field:   "refresh_interval_sec",
+			Message: "Refresh interval must be at least 30 seconds.",
+		}
+	}
+
+	if out.Enabled == nil {
+		enabled := true
+		out.Enabled = &enabled
+	}
+	return out, nil
+}
+
+// validateFeedURL insists on an absolute http(s) URL with a host. Rejecting other schemes
+// keeps the fetcher from being pointed at the local filesystem or anything else exotic.
+func validateFeedURL(raw string) error {
+	invalid := ValidationError{
+		Field:   "url",
+		Message: "RSS link must be a valid http(s) URL.",
+	}
+
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return invalid
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return invalid
+	}
+	if parsed.Host == "" {
+		return invalid
+	}
+	return nil
 }
 
 // UpdateFeedInput is a partial update of a feed. Every field is a pointer so that a nil

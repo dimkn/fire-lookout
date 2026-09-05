@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -44,12 +45,37 @@ func ts(t *testing.T, s string) time.Time {
 
 func ptr[T any](v T) *T { return &v }
 
+// fakeSubscriber stands in for the write-side use case.
+type fakeSubscriber struct {
+	feed domain.Feed
+	err  error
+
+	calls int
+	got   domain.SubscribeInput
+}
+
+func (f *fakeSubscriber) SubscribeFeed(_ context.Context, in domain.SubscribeInput) (domain.Feed, error) {
+	f.calls++
+	f.got = in
+	return f.feed, f.err
+}
+
 func do(t *testing.T, fake *fakeStatus, method, target string) *httptest.ResponseRecorder {
 	t.Helper()
+	return send(t, fake, &fakeSubscriber{}, method, target, "")
+}
+
+func send(t *testing.T, status *fakeStatus, subscriber *fakeSubscriber, method, target, body string) *httptest.ResponseRecorder {
+	t.Helper()
+
+	var reader io.Reader
+	if body != "" {
+		reader = strings.NewReader(body)
+	}
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequestWithContext(t.Context(), method, target, nil)
-	NewRouter(NewServer(fake), "/api").ServeHTTP(rec, req)
+	req := httptest.NewRequestWithContext(t.Context(), method, target, reader)
+	NewRouter(NewServer(status, subscriber), "/api").ServeHTTP(rec, req)
 	return rec
 }
 
@@ -295,6 +321,155 @@ func TestMalformedFeedIdIsBadRequest(t *testing.T) {
 	}
 	if body.Code != "bad_request" {
 		t.Errorf("code = %q, want bad_request", body.Code)
+	}
+}
+
+func TestSubscribeFeedCreatesAndReturnsTheFeed(t *testing.T) {
+	subscriber := &fakeSubscriber{feed: domain.Feed{
+		ID: 7, URL: "https://a.test/feed.atom", Title: "GitHub",
+		Enabled: true, RefreshInterval: 5 * time.Minute,
+		CreatedAt: ts(t, "2026-08-24T12:00:00Z"), UpdatedAt: ts(t, "2026-08-24T12:00:00Z"),
+	}}
+
+	rec := send(t, &fakeStatus{}, subscriber, http.MethodPost, "/api/feeds",
+		`{"url":"https://a.test/feed.atom","title":"GitHub"}`)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201 (body %s)", rec.Code, rec.Body.String())
+	}
+
+	var got Feed
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal body %s: %v", rec.Body.String(), err)
+	}
+	if got.Id != 7 || got.Title != "GitHub" {
+		t.Errorf("feed = %+v, want the created one", got)
+	}
+	if subscriber.got.URL != "https://a.test/feed.atom" || subscriber.got.Title != "GitHub" {
+		t.Errorf("use case received %+v, want the body's url and title", subscriber.got)
+	}
+	// A brand-new feed has never been polled, so its light stays unknown.
+	if got.CurrentStatus != nil || got.LastSuccessAt != nil {
+		t.Errorf("feed = %+v, want no derived status or health yet", got)
+	}
+}
+
+func TestSubscribeFeedPassesOptionalFieldsThrough(t *testing.T) {
+	subscriber := &fakeSubscriber{}
+
+	send(t, &fakeStatus{}, subscriber, http.MethodPost, "/api/feeds",
+		`{"url":"https://a.test/feed.atom","title":"GitHub","group_id":3,"refresh_interval_sec":90,"enabled":false}`)
+
+	if subscriber.got.GroupID != 3 {
+		t.Errorf("GroupID = %d, want 3", subscriber.got.GroupID)
+	}
+	if subscriber.got.RefreshInterval != 90*time.Second {
+		t.Errorf("RefreshInterval = %v, want 90s", subscriber.got.RefreshInterval)
+	}
+	if subscriber.got.Enabled == nil || *subscriber.got.Enabled {
+		t.Errorf("Enabled = %v, want false", subscriber.got.Enabled)
+	}
+}
+
+// Omitted optionals must stay nil/zero so the application applies its own defaults.
+func TestSubscribeFeedLeavesOmittedOptionalsAlone(t *testing.T) {
+	subscriber := &fakeSubscriber{}
+
+	send(t, &fakeStatus{}, subscriber, http.MethodPost, "/api/feeds",
+		`{"url":"https://a.test/feed.atom","title":"GitHub"}`)
+
+	if subscriber.got.Enabled != nil {
+		t.Errorf("Enabled = %v, want nil so the default applies", subscriber.got.Enabled)
+	}
+	if subscriber.got.RefreshInterval != 0 {
+		t.Errorf("RefreshInterval = %v, want zero so the default applies", subscriber.got.RefreshInterval)
+	}
+	if subscriber.got.GroupID != 0 {
+		t.Errorf("GroupID = %d, want 0", subscriber.got.GroupID)
+	}
+}
+
+func TestSubscribeFeedErrorMapping(t *testing.T) {
+	tests := []struct {
+		name       string
+		err        error
+		wantStatus int
+		wantCode   string
+		wantInBody string
+	}{
+		{
+			name:       "a rejected field is a bad request",
+			err:        domain.ValidationError{Field: "title", Message: "Name must not be empty."},
+			wantStatus: http.StatusBadRequest,
+			wantCode:   "invalid_input",
+			wantInBody: "Name must not be empty.",
+		},
+		{
+			name:       "a duplicate url is a conflict",
+			err:        fmt.Errorf("subscribe: %w", domain.ErrDuplicateURL),
+			wantStatus: http.StatusConflict,
+			wantCode:   "feed_exists",
+		},
+		{
+			name:       "a duplicate name is a conflict",
+			err:        fmt.Errorf("subscribe: %w", domain.ErrDuplicateTitle),
+			wantStatus: http.StatusConflict,
+			wantCode:   "name_exists",
+		},
+		{
+			name:       "an unreadable feed is unprocessable",
+			err:        fmt.Errorf("validate: %w", domain.ErrFeedUnreachable),
+			wantStatus: http.StatusUnprocessableEntity,
+			wantCode:   "feed_unreachable",
+		},
+		{
+			name:       "anything else is a server error",
+			err:        errors.New("database on fire"),
+			wantStatus: http.StatusInternalServerError,
+			wantCode:   "internal_error",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := send(t, &fakeStatus{}, &fakeSubscriber{err: tt.err}, http.MethodPost, "/api/feeds",
+				`{"url":"https://a.test/feed.atom","title":"GitHub"}`)
+
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d (body %s)", rec.Code, tt.wantStatus, rec.Body.String())
+			}
+
+			var body Error
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatalf("unmarshal body %s: %v", rec.Body.String(), err)
+			}
+			if body.Code != tt.wantCode {
+				t.Errorf("code = %q, want %q", body.Code, tt.wantCode)
+			}
+			if body.Message == "" {
+				t.Error("message is empty, want something showable to the user")
+			}
+			if tt.wantInBody != "" && body.Message != tt.wantInBody {
+				t.Errorf("message = %q, want %q", body.Message, tt.wantInBody)
+			}
+			// Internal detail must never reach the client.
+			if strings.Contains(body.Message, "database on fire") {
+				t.Error("message leaks the internal error text")
+			}
+		})
+	}
+}
+
+func TestSubscribeFeedRejectsMalformedJSON(t *testing.T) {
+	subscriber := &fakeSubscriber{}
+
+	rec := send(t, &fakeStatus{}, subscriber, http.MethodPost, "/api/feeds", `{"url":`)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	if subscriber.calls != 0 {
+		t.Errorf("use case called %d times, want 0", subscriber.calls)
 	}
 }
 

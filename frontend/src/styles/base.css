@@ -17,7 +17,9 @@
   --indicator-outage: #cf222e;
   --indicator-unknown: #8b949e;
 
-  /* Top of the stacking order: the status banner must cover anything the page grows. */
+  /* Stacking order. The banner sits above the modal on purpose: a failed save has to be
+     readable while the dialog is still open. */
+  --z-modal: 100;
   --z-status-banner: 9999;
 }
 

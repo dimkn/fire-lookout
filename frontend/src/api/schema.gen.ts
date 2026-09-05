@@ -268,22 +268,21 @@ export interface components {
         SubscribeFeedRequest: {
             /**
              * Format: uri
-             * @description The RSS/Atom endpoint to subscribe to.
+             * @description The RSS/Atom endpoint to subscribe to. Must be an http(s) URL, and is fetched once before the feed is stored — an endpoint that cannot be read or parsed is rejected with 422 and nothing is saved.
              * @example https://www.githubstatus.com/history.atom
              */
             url: string;
-            /** @description Optional display name; defaults to the feed's own <title>. */
-            title?: string;
+            /** @description Display name for the system. Required, trimmed, and unique case-insensitively across feeds. */
+            title: string;
             /**
              * Format: int64
-             * @description 0 == Ungrouped. Must reference an existing group.
-             * @default 0
+             * @description 0 == Ungrouped, which is also what an omitted value falls back to. Must reference an existing group.
              */
-            group_id: number;
-            /** @default 300 */
-            refresh_interval_sec: number;
-            /** @default true */
-            enabled: boolean;
+            group_id?: number;
+            /** @description Poll cadence in seconds; omitted means 300. */
+            refresh_interval_sec?: number;
+            /** @description Whether the feed is polled; omitted means true. */
+            enabled?: boolean;
         };
         /** @description Partial update; omitted fields are left unchanged. */
         UpdateFeedRequest: {

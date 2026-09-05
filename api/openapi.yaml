@@ -6,7 +6,7 @@ info:
     Backend↔frontend contract for the local status-page reader. This is the single
     source of truth (AGENTS.md §3, §6): the Go server stubs and the TypeScript client
     are generated from this file and must never be hand-edited.
-  version: 0.3.0 # tracks the root VERSION file (AGENTS.md §7)
+  version: 0.4.0 # tracks the root VERSION file (AGENTS.md §7)
 
 servers:
   - url: /api
@@ -488,28 +488,36 @@ components:
 
     SubscribeFeedRequest:
       type: object
-      required: [url]
+      required: [url, title]
       properties:
         url:
           type: string
           format: uri
-          description: The RSS/Atom endpoint to subscribe to.
+          minLength: 1
+          description: >-
+            The RSS/Atom endpoint to subscribe to. Must be an http(s) URL, and is
+            fetched once before the feed is stored — an endpoint that cannot be read
+            or parsed is rejected with 422 and nothing is saved.
           example: https://www.githubstatus.com/history.atom
         title:
           type: string
-          description: Optional display name; defaults to the feed's own <title>.
+          minLength: 1
+          description: >-
+            Display name for the system. Required, trimmed, and unique
+            case-insensitively across feeds.
         group_id:
           type: integer
           format: int64
-          default: 0
-          description: 0 == Ungrouped. Must reference an existing group.
+          description: >-
+            0 == Ungrouped, which is also what an omitted value falls back to. Must
+            reference an existing group.
         refresh_interval_sec:
           type: integer
           minimum: 30
-          default: 300
+          description: Poll cadence in seconds; omitted means 300.
         enabled:
           type: boolean
-          default: true
+          description: Whether the feed is polled; omitted means true.
 
     UpdateFeedRequest:
       type: object

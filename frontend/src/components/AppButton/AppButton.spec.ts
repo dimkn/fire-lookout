@@ -26,6 +26,32 @@ describe('AppButton', () => {
     expect(wrapper.emitted('click')).toHaveLength(1)
   })
 
+  describe('when disabled', () => {
+    const disabled = { props: { label: 'Save', disabled: true } }
+
+    it('carries the disabled attribute', () => {
+      const wrapper = mount(AppButton, disabled)
+
+      expect(wrapper.attributes('disabled')).toBeDefined()
+    })
+
+    it('does not emit click', async () => {
+      const wrapper = mount(AppButton, disabled)
+
+      await wrapper.trigger('click')
+
+      expect(wrapper.emitted('click')).toBeUndefined()
+    })
+
+    // Disabled is not busy: no loader, and nothing is in flight.
+    it('shows no loader', () => {
+      const wrapper = mount(AppButton, disabled)
+
+      expect(wrapper.findComponent(DotsLoader).exists()).toBe(false)
+      expect(wrapper.attributes('aria-busy')).toBe('false')
+    })
+  })
+
   it('shows no loader and stays enabled by default', () => {
     const wrapper = mount(AppButton, { props: { label: 'Refresh' } })
 

@@ -2,7 +2,8 @@
 import { onMounted, ref } from 'vue'
 
 import type { StatusItem, SystemOverview } from '@/api/status'
-import { fetchFeedItems, fetchOverview } from '@/api/status'
+import { fetchFeedItems, fetchOverview, RequestError, subscribeFeed } from '@/api/status'
+import AddIntegrationDialog from '@/components/AddIntegrationDialog/AddIntegrationDialog.vue'
 import SystemList from '@/components/SystemList/SystemList.vue'
 import PageToolbar from '@/components/PageToolbar/PageToolbar.vue'
 import { notifyError, notifySuccess } from '@/composables/statusBanner'
@@ -11,6 +12,8 @@ import { delay, MIN_LOADING_MS } from '@/utils/timing'
 const systems = ref<SystemOverview[]>([])
 const itemsByFeed = ref<Record<number, StatusItem[]>>({})
 const refreshing = ref(false)
+const addOpen = ref(false)
+const saving = ref(false)
 
 onMounted(async () => {
   try {
@@ -69,7 +72,51 @@ async function refresh() {
 }
 
 function addIntegration() {
-  // No-op for now: subscribing to a new feed is its own slice.
+  addOpen.value = true
+}
+
+// Unmounting the dialog is what clears it, so reopening always offers a blank form.
+function closeAdd() {
+  addOpen.value = false
+}
+
+async function saveIntegration(input: { title: string; url: string }) {
+  if (saving.value) {
+    return
+  }
+  saving.value = true
+
+  const minimumElapsed = delay(MIN_LOADING_MS)
+  try {
+    await subscribeFeed(input)
+    await minimumElapsed
+    addOpen.value = false
+    notifySuccess(`${input.title} was added.`)
+    await reloadAfterAdd()
+  } catch (error) {
+    // The dialog stays exactly as it was, so the user can fix the value and retry. The
+    // backend's own message is the useful one — it says which rule was broken.
+    await minimumElapsed
+    console.error(error)
+    const message =
+      error instanceof RequestError && error.serverMessage
+        ? error.serverMessage
+        : 'Could not add the integration.'
+    notifyError(message)
+  } finally {
+    saving.value = false
+  }
+}
+
+// The new system is stored but the dashboard renders the overview read model, so re-read it
+// rather than deriving a row here — which light a system shows is the backend's decision.
+async function reloadAfterAdd() {
+  try {
+    systems.value = await fetchOverview()
+  } catch (error) {
+    console.error(error)
+    notifyError('Added, but the list could not be reloaded. Press Refresh.')
+  }
 }
 </script>
 
@@ -80,6 +127,13 @@ function addIntegration() {
     <div class="overview__systems">
       <SystemList :systems="systems" :items-by-feed="itemsByFeed" @expand="loadItems" />
     </div>
+
+    <AddIntegrationDialog
+      v-if="addOpen"
+      :saving="saving"
+      @close="closeAdd"
+      @submit="saveIntegration"
+    />
   </main>
 </template>
 

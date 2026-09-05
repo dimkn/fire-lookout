@@ -26,6 +26,40 @@ type fakeRepo struct {
 	gotSince  *time.Time
 	gotLimit  int
 	itemsCall int
+
+	// Write side, exercised by the subscribe use case.
+	urlExists      bool
+	titleExists    bool
+	urlExistsErr   error
+	titleExistsErr error
+	createErr      error
+	created        domain.Feed
+	createCalls    int
+	gotURLLookup   string
+	gotTitleLookup string
+}
+
+func (r *fakeRepo) FeedExistsByURL(_ context.Context, url string) (bool, error) {
+	r.gotURLLookup = url
+	return r.urlExists, r.urlExistsErr
+}
+
+func (r *fakeRepo) FeedExistsByTitle(_ context.Context, title string) (bool, error) {
+	r.gotTitleLookup = title
+	return r.titleExists, r.titleExistsErr
+}
+
+func (r *fakeRepo) CreateFeed(_ context.Context, feed domain.Feed) (domain.Feed, error) {
+	r.createCalls++
+	if r.createErr != nil {
+		return domain.Feed{}, r.createErr
+	}
+	r.created = feed
+	stored := feed
+	stored.ID = 42
+	stored.CreatedAt = ts("2026-08-24T12:00:00Z")
+	stored.UpdatedAt = stored.CreatedAt
+	return stored, nil
 }
 
 func (r *fakeRepo) ListFeeds(context.Context) ([]domain.Feed, error) {

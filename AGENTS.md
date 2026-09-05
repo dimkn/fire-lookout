@@ -125,7 +125,9 @@ hand-written.
   below only summarize intent. Three tables:
   - `feed_group` — arbitrary user buckets. Row **`id = 0` is a seeded, undeletable
     `Ungrouped` sentinel** (a `BEFORE DELETE` trigger guards it).
-  - `feed` — one row per subscribed RSS/Atom endpoint (`url` UNIQUE). `group_id` is
+  - `feed` — one row per subscribed RSS/Atom endpoint (`url` UNIQUE, and `title` unique
+    **case-insensitively** via `idx_feed_title_unique` in migration `00002` — two systems may
+    not share a display name). `group_id` is
     `NOT NULL DEFAULT 0` referencing `feed_group(id)` with `ON DELETE SET DEFAULT`, so
     deleting a group re-parents its feeds to `Ungrouped` rather than orphaning or deleting
     them. Health bookkeeping is a distinct trio: `last_fetched_at` (attempt),
@@ -141,6 +143,14 @@ hand-written.
     window (default ~7 days); `feed`/`feed_group` rows are never pruned.
   - **Fetching:** the poller always re-fetches and re-parses — no HTTP conditional-GET
     (ETag/Last-Modified) bookkeeping yet; add it if a provider rate-limits.
+- **Subscribing is validate-then-write.** `POST /feeds` sanitises the input (every string
+  trimmed, empties rejected, http(s) URLs only), rejects a duplicate URL or name, and only
+  then fetches the endpoint once through the `FeedFetcher` port to prove it really is a feed.
+  Cheapest checks first: a duplicate never costs a network round trip, and nothing is written
+  unless every check passes. The validation fetch is **not** a poll — it stores no incidents
+  and leaves the health columns null, so a new system shows an unknown (grey) light until the
+  poller reads it. The `feed/` adapter therefore exists for validation only today; polling is
+  still a later slice.
 - **Read model / traffic-light.** `GET /overview` backs the main page: one row per feed, no
   parameters, and no incidents (a card lazily fetches its own from `GET /feeds/{feedId}/items`).
   The `Indicator` (green/yellow/red/grey) is derived in `domain` — never in the frontend — from

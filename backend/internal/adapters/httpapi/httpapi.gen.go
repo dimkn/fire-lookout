@@ -147,6 +147,26 @@ type StatusItem struct {
 	UpdatedAt *time.Time `json:"updated_at,omitempty"`
 }
 
+// SubscribeFeedRequest defines model for SubscribeFeedRequest.
+type SubscribeFeedRequest struct {
+	// Enabled Whether the feed is polled; omitted means true.
+	Enabled *bool `json:"enabled,omitempty"`
+
+	// GroupId 0 == Ungrouped, which is also what an omitted value falls back to. Must reference an existing group.
+	GroupId *int64 `json:"group_id,omitempty"`
+
+	// RefreshIntervalSec Poll cadence in seconds; omitted means 300.
+	RefreshIntervalSec *int `json:"refresh_interval_sec,omitempty"`
+
+	// Title Display name for the system. Required, trimmed, and unique case-insensitively across feeds.
+	Title string `json:"title"`
+
+	// Url The RSS/Atom endpoint to subscribe to. Must be an http(s) URL, and is fetched once before the feed is stored — an endpoint that cannot be read or parsed is rejected with 422 and nothing is saved.
+	//
+	// Example: https://www.githubstatus.com/history.atom
+	Url string `json:"url"`
+}
+
 // SystemOverview One system as the main page needs it: the feed itself plus the derived indicator. Incidents are intentionally absent — see /feeds/{feedId}/items.
 type SystemOverview struct {
 	Feed Feed `json:"feed"`
@@ -164,8 +184,17 @@ type FeedId = int64
 // GroupId defines model for GroupId.
 type GroupId = int64
 
+// BadRequest defines model for BadRequest.
+type BadRequest = Error
+
+// Conflict defines model for Conflict.
+type Conflict = Error
+
 // NotFound defines model for NotFound.
 type NotFound = Error
+
+// UnprocessableEntity defines model for UnprocessableEntity.
+type UnprocessableEntity = Error
 
 // ListFeedItemsParams defines parameters for ListFeedItems.
 type ListFeedItemsParams struct {
@@ -176,8 +205,14 @@ type ListFeedItemsParams struct {
 	Limit *int `form:"limit,omitempty" json:"limit,omitempty"`
 }
 
+// SubscribeFeedJSONRequestBody defines body for SubscribeFeed for application/json ContentType.
+type SubscribeFeedJSONRequestBody = SubscribeFeedRequest
+
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
+	// SubscribeFeed Subscribe to a new feed.
+	// (POST /feeds)
+	SubscribeFeed(w http.ResponseWriter, r *http.Request)
 	// ListFeedItems List a feed's status items (incidents), newest first.
 	// (GET /feeds/{feedId}/items)
 	ListFeedItems(w http.ResponseWriter, r *http.Request, feedId FeedId, params ListFeedItemsParams)
@@ -194,6 +229,20 @@ type ServerInterfaceWrapper struct {
 }
 
 type MiddlewareFunc func(http.Handler) http.Handler
+
+// SubscribeFeed operation middleware
+func (siw *ServerInterfaceWrapper) SubscribeFeed(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.SubscribeFeed(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
 
 // ListFeedItems operation middleware
 func (siw *ServerInterfaceWrapper) ListFeedItems(w http.ResponseWriter, r *http.Request) {
@@ -385,6 +434,7 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	}
 
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/overview", wrapper.GetOverview)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/feeds", wrapper.SubscribeFeed)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/feeds/{feedId}/items", wrapper.ListFeedItems)
 
 	return m

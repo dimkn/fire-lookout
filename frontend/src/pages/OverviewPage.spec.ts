@@ -1,8 +1,10 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { StatusItem, SystemOverview } from '@/api/status'
-import { fetchFeedItems, fetchOverview } from '@/api/status'
+import type { Feed, StatusItem, SystemOverview } from '@/api/status'
+import { fetchFeedItems, fetchOverview, RequestError, subscribeFeed } from '@/api/status'
+import AddIntegrationDialog from '@/components/AddIntegrationDialog/AddIntegrationDialog.vue'
+import AppButton from '@/components/AppButton/AppButton.vue'
 import SystemCard from '@/components/SystemCard/SystemCard.vue'
 import PageToolbar from '@/components/PageToolbar/PageToolbar.vue'
 import { clearBanners, currentBanner } from '@/composables/statusBanner'
@@ -10,13 +12,34 @@ import { MIN_LOADING_MS } from '@/utils/timing'
 
 import OverviewPage from './OverviewPage.vue'
 
-vi.mock('@/api/status', () => ({
-  fetchOverview: vi.fn(),
-  fetchFeedItems: vi.fn(),
-}))
+vi.mock('@/api/status', async (importOriginal) => {
+  // RequestError is a real class the page checks with instanceof, so keep it genuine and
+  // stub only the request functions.
+  const actual = await importOriginal<typeof import('@/api/status')>()
+  return {
+    RequestError: actual.RequestError,
+    fetchOverview: vi.fn(),
+    fetchFeedItems: vi.fn(),
+    subscribeFeed: vi.fn(),
+  }
+})
 
 const fetchOverviewMock = vi.mocked(fetchOverview)
 const fetchFeedItemsMock = vi.mocked(fetchFeedItems)
+const subscribeFeedMock = vi.mocked(subscribeFeed)
+
+function makeFeed(id: number, title: string): Feed {
+  return {
+    id,
+    url: `https://${title.toLowerCase()}.test/feed.atom`,
+    title,
+    group_id: 0,
+    enabled: true,
+    refresh_interval_sec: 300,
+    created_at: '2026-08-24T12:00:00Z',
+    updated_at: '2026-08-24T12:00:00Z',
+  }
+}
 
 function makeSystem(id: number, title: string): SystemOverview {
   return {
@@ -63,8 +86,10 @@ describe('OverviewPage', () => {
   beforeEach(() => {
     fetchOverviewMock.mockReset()
     fetchFeedItemsMock.mockReset()
+    subscribeFeedMock.mockReset()
     fetchOverviewMock.mockResolvedValue([])
     fetchFeedItemsMock.mockResolvedValue([])
+    subscribeFeedMock.mockResolvedValue(makeFeed(99, 'Something'))
     clearBanners()
   })
 
@@ -194,16 +219,201 @@ describe('OverviewPage', () => {
     expect(logged).toHaveBeenCalled()
   })
 
-  // Adding an integration is still its own slice.
-  it('does not call the API when the add button is pressed', async () => {
-    fetchOverviewMock.mockResolvedValue([makeSystem(1, 'GitHub')])
+  describe('adding an integration', () => {
+    beforeEach(() => {
+      vi.useFakeTimers()
+    })
 
-    const wrapper = await mountPage()
-    wrapper.getComponent(PageToolbar).vm.$emit('add')
-    await flushPromises()
+    afterEach(() => {
+      vi.useRealTimers()
+    })
 
-    expect(fetchOverviewMock).toHaveBeenCalledTimes(1)
-    expect(fetchFeedItemsMock).not.toHaveBeenCalled()
+    async function openDialog() {
+      fetchOverviewMock.mockResolvedValue([makeSystem(1, 'GitHub')])
+      const wrapper = mount(OverviewPage, { attachTo: document.body })
+      await flushPromises()
+      wrapper.getComponent(PageToolbar).vm.$emit('add')
+      await flushPromises()
+      return wrapper
+    }
+
+    async function fillAndSave(wrapper: Awaited<ReturnType<typeof openDialog>>) {
+      const inputs = wrapper.getComponent(AddIntegrationDialog).findAll('input')
+      await inputs[0].setValue('Fastly')
+      await inputs[1].setValue('https://fastly.test/feed.atom')
+      await wrapper
+        .getComponent(AddIntegrationDialog)
+        .findAllComponents(AppButton)
+        .find((b) => b.props('label') === 'Save')!
+        .trigger('click')
+    }
+
+    async function settle() {
+      await vi.advanceTimersByTimeAsync(MIN_LOADING_MS)
+      await flushPromises()
+    }
+
+    it('shows no dialog until the button is pressed', async () => {
+      fetchOverviewMock.mockResolvedValue([])
+
+      const wrapper = await mountPage()
+
+      expect(wrapper.findComponent(AddIntegrationDialog).exists()).toBe(false)
+    })
+
+    it('opens the dialog on the add button, without calling the API', async () => {
+      const wrapper = await openDialog()
+
+      expect(wrapper.findComponent(AddIntegrationDialog).exists()).toBe(true)
+      expect(subscribeFeedMock).not.toHaveBeenCalled()
+      expect(fetchOverviewMock).toHaveBeenCalledTimes(1)
+      wrapper.unmount()
+    })
+
+    it('closes on Close, saying nothing', async () => {
+      const wrapper = await openDialog()
+
+      wrapper.getComponent(AddIntegrationDialog).vm.$emit('close')
+      await flushPromises()
+
+      expect(wrapper.findComponent(AddIntegrationDialog).exists()).toBe(false)
+      expect(currentBanner.value).toBeNull()
+      expect(subscribeFeedMock).not.toHaveBeenCalled()
+      wrapper.unmount()
+    })
+
+    // Reopening must offer a blank form, never the abandoned draft.
+    it('reopens empty after a cancelled draft', async () => {
+      const wrapper = await openDialog()
+      const inputs = wrapper.getComponent(AddIntegrationDialog).findAll('input')
+      await inputs[0].setValue('Half-typed')
+
+      wrapper.getComponent(AddIntegrationDialog).vm.$emit('close')
+      await flushPromises()
+      wrapper.getComponent(PageToolbar).vm.$emit('add')
+      await flushPromises()
+
+      const values = wrapper
+        .getComponent(AddIntegrationDialog)
+        .findAll('input')
+        .map((i) => (i.element as HTMLInputElement).value)
+      expect(values).toEqual(['', ''])
+      wrapper.unmount()
+    })
+
+    it('sends what was typed', async () => {
+      const wrapper = await openDialog()
+
+      await fillAndSave(wrapper)
+      await settle()
+
+      expect(subscribeFeedMock).toHaveBeenCalledWith({
+        title: 'Fastly',
+        url: 'https://fastly.test/feed.atom',
+      })
+      wrapper.unmount()
+    })
+
+    it('marks the dialog as saving until the request settles', async () => {
+      const wrapper = await openDialog()
+      let release: (value: Feed) => void = () => {}
+      subscribeFeedMock.mockReturnValueOnce(
+        new Promise<Feed>((resolve) => {
+          release = resolve
+        }),
+      )
+
+      await fillAndSave(wrapper)
+      expect(wrapper.getComponent(AddIntegrationDialog).props('saving')).toBe(true)
+
+      release(makeFeed(2, 'Fastly'))
+      await settle()
+
+      expect(wrapper.findComponent(AddIntegrationDialog).exists()).toBe(false)
+      wrapper.unmount()
+    })
+
+    it('closes the dialog, announces success and shows the new system', async () => {
+      const wrapper = await openDialog()
+      subscribeFeedMock.mockResolvedValueOnce(makeFeed(2, 'Fastly'))
+      fetchOverviewMock.mockResolvedValueOnce([makeSystem(1, 'GitHub'), makeSystem(2, 'Fastly')])
+
+      await fillAndSave(wrapper)
+      await settle()
+
+      expect(wrapper.findComponent(AddIntegrationDialog).exists()).toBe(false)
+      expect(currentBanner.value).toMatchObject({ kind: 'success' })
+      expect(currentBanner.value?.message).toContain('Fastly')
+      // Re-read so the dashboard shows it without waiting for a manual refresh.
+      expect(fetchOverviewMock).toHaveBeenCalledTimes(2)
+      const names = wrapper.findAll('.system-card__name').map((n) => n.text())
+      expect(names).toEqual(['GitHub', 'Fastly'])
+      wrapper.unmount()
+    })
+
+    it('keeps the dialog open and shows the server’s message on failure', async () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {})
+      const wrapper = await openDialog()
+      subscribeFeedMock.mockRejectedValueOnce(
+        new RequestError(
+          409,
+          'name_exists',
+          'A system with that name already exists.',
+          'add integration failed',
+        ),
+      )
+
+      await fillAndSave(wrapper)
+      await settle()
+
+      expect(wrapper.findComponent(AddIntegrationDialog).exists()).toBe(true)
+      expect(currentBanner.value).toMatchObject({
+        kind: 'error',
+        message: 'A system with that name already exists.',
+      })
+      // The list must not be re-read when nothing was created.
+      expect(fetchOverviewMock).toHaveBeenCalledTimes(1)
+      wrapper.unmount()
+    })
+
+    it('falls back to its own wording when the failure carries no message', async () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {})
+      const wrapper = await openDialog()
+      subscribeFeedMock.mockRejectedValueOnce(new Error('network down'))
+
+      await fillAndSave(wrapper)
+      await settle()
+
+      expect(currentBanner.value?.kind).toBe('error')
+      expect(currentBanner.value?.message).not.toContain('network down')
+      expect(currentBanner.value?.message.length).toBeGreaterThan(0)
+      wrapper.unmount()
+    })
+
+    it('lets the dialog be retried after a failure', async () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {})
+      const wrapper = await openDialog()
+      subscribeFeedMock.mockRejectedValueOnce(
+        new RequestError(422, 'feed_unreachable', 'Could not read a feed there.', 'failed'),
+      )
+
+      await fillAndSave(wrapper)
+      await settle()
+      expect(wrapper.getComponent(AddIntegrationDialog).props('saving')).toBe(false)
+
+      subscribeFeedMock.mockResolvedValueOnce(makeFeed(2, 'Fastly'))
+      fetchOverviewMock.mockResolvedValueOnce([makeSystem(2, 'Fastly')])
+      await wrapper
+        .getComponent(AddIntegrationDialog)
+        .findAllComponents(AppButton)
+        .find((b) => b.props('label') === 'Save')!
+        .trigger('click')
+      await settle()
+
+      expect(subscribeFeedMock).toHaveBeenCalledTimes(2)
+      expect(wrapper.findComponent(AddIntegrationDialog).exists()).toBe(false)
+      wrapper.unmount()
+    })
   })
 
   describe('refresh', () => {
