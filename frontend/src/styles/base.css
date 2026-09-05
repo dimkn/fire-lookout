@@ -9,6 +9,16 @@
   --text-muted: #656d76;
   --accent: #0969da;
   --danger: #cf222e;
+
+  /* The traffic-light palette. Owned here rather than by StatusIndicator, because the
+     status banner aligns its colours with these. */
+  --indicator-operational: #2da44e;
+  --indicator-degraded: #d4a72c;
+  --indicator-outage: #cf222e;
+  --indicator-unknown: #8b949e;
+
+  /* Top of the stacking order: the status banner must cover anything the page grows. */
+  --z-status-banner: 9999;
 }
 
 *,

@@ -31,4 +31,26 @@ describe('PageToolbar', () => {
     expect(wrapper.emitted('add')).toHaveLength(1)
     expect(wrapper.emitted('refresh')).toBeUndefined()
   })
+
+  it('leaves both buttons idle by default', () => {
+    const wrapper = mount(PageToolbar)
+
+    const loadingFlags = wrapper.findAllComponents(AppButton).map((b) => b.props('loading'))
+    expect(loadingFlags).toEqual([false, false])
+  })
+
+  it('puts the refresh button — and only it — into the loading state', () => {
+    const wrapper = mount(PageToolbar, { props: { refreshing: true } })
+
+    const loadingFlags = wrapper.findAllComponents(AppButton).map((b) => b.props('loading'))
+    expect(loadingFlags).toEqual([true, false])
+  })
+
+  it('does not emit refresh while it is already refreshing', async () => {
+    const wrapper = mount(PageToolbar, { props: { refreshing: true } })
+
+    await wrapper.findAllComponents(AppButton)[0].trigger('click')
+
+    expect(wrapper.emitted('refresh')).toBeUndefined()
+  })
 })

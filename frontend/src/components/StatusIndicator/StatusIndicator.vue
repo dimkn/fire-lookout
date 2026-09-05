@@ -33,23 +33,24 @@ const label = computed(() => LABELS[props.indicator] ?? LABELS.unknown)
   width: 0.75rem;
   height: 0.75rem;
   border-radius: 50%;
-  background: var(--indicator-color, #8b949e);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--indicator-color, #8b949e) 22%, transparent);
+  background: var(--indicator-color, var(--indicator-unknown));
+  box-shadow: 0 0 0 3px
+    color-mix(in srgb, var(--indicator-color, var(--indicator-unknown)) 22%, transparent);
 }
 
 .status-indicator--operational {
-  --indicator-color: #2da44e;
+  --indicator-color: var(--indicator-operational);
 }
 
 .status-indicator--degraded {
-  --indicator-color: #d4a72c;
+  --indicator-color: var(--indicator-degraded);
 }
 
 .status-indicator--outage {
-  --indicator-color: #cf222e;
+  --indicator-color: var(--indicator-outage);
 }
 
 .status-indicator--unknown {
-  --indicator-color: #8b949e;
+  --indicator-color: var(--indicator-unknown);
 }
 </style>

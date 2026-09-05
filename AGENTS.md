@@ -57,6 +57,7 @@ hand-written.
 │   └── src/
 │       ├── components/            # DESIGN SYSTEM. One folder per component + story + test.
 │       ├── pages/                 # Compose components. No logic, no direct fetch.
+│       ├── composables/          # Shared reactive UI state (e.g. the status-banner queue).
 │       ├── utils/                 # Pure presentation helpers (e.g. timestamp formatting).
 │       ├── styles/                # Global CSS custom properties + element defaults.
 │       └── api/                   # schema.gen.ts is GENERATED; client.ts/status.ts are the
@@ -180,13 +181,29 @@ hand-written.
   - `client.ts` — the `openapi-fetch` client instance (`baseUrl: '/api'`), three lines.
   - `status.ts` — one thin function per operation the UI calls (`fetchOverview`,
     `fetchFeedItems`), plus the schema type aliases everything else imports. Transport only:
-    unwrap the response, throw on `error`, never reshape or decide anything.
+    unwrap the response, throw on failure, never reshape or decide anything.
+    **A missing body is a failure, never an empty result.** `openapi-fetch` populates `error`
+    only when the failure body parsed as the contract's `Error` schema; a dead backend behind
+    the dev proxy answers `500` with an empty body, so both `data` and `error` come back
+    undefined. Check `response.ok` and `data` — defaulting to `[]` there would render "no
+    systems" as though the server had said so, and would blank the page on a failed refresh.
 - **Data flows top-down; components never fetch.** A page owns the data and passes it into
   components as props; a component that needs more data *emits* (e.g. `SystemCard` emits
   `expand`, the page fetches that feed's items and passes them back). This keeps component
   tests free of network mocking.
 - **Component names are multi-word** (`vue/multi-word-component-names`) — hence `PageToolbar`,
   not `Toolbar`.
+- **Outcomes are announced, never swallowed.** A failed request must not leave the user
+  guessing — an empty area otherwise reads as "nothing saved yet", and an empty card body as
+  "no incidents". Announce via `notifyError` / `notifySuccess` from
+  `src/composables/statusBanner.ts`, and keep the `console.error` alongside it: the banner
+  carries a human sentence, the console keeps the technical detail. The queue shows one banner
+  at a time, bottom-right, above everything (`--z-status-banner`).
+- **Loading states have a minimum duration.** The backend is local and answers in single-digit
+  milliseconds, so an unfloored spinner flashes for a frame and reads as a glitch. Gate them on
+  `MIN_LOADING_MS` from `src/utils/timing.ts` (a floor, not a timeout — a slow request still
+  owns the affordance), and reveal fresh data only once the floor has passed, so no frame shows
+  new content under a live loader.
 - **Deferred, by decision:** Storybook stories (`*.stories.ts`) and Playwright visual tests are
   not set up yet; the first slice ships components with Vitest specs only, and UI appearance was
   verified manually in a browser. Add both when the design system grows — the per-component

@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import StatusBanner from '@/components/StatusBanner/StatusBanner.vue'
+import { currentBanner, dismissBanner } from '@/composables/statusBanner'
 import OverviewPage from '@/pages/OverviewPage.vue'
 
 // Injected from the root VERSION file at build time (AGENTS.md §7). Carried on the root
@@ -10,6 +12,16 @@ const version = __APP_VERSION__
   <div class="app" :data-app-version="version">
     <OverviewPage />
   </div>
+
+  <!-- Outside .app so the page's width constraints never apply to it. Keyed on the id so
+       the next queued banner mounts fresh, with its own countdown. -->
+  <StatusBanner
+    v-if="currentBanner"
+    :key="currentBanner.id"
+    :kind="currentBanner.kind"
+    :message="currentBanner.message"
+    @close="dismissBanner"
+  />
 </template>
 
 <style scoped>
