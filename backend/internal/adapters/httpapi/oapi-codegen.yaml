@@ -1,0 +1,20 @@
+# oapi-codegen configuration for the driving HTTP adapter.
+#
+# api/openapi.yaml is the contract (AGENTS.md §3, §6). Regenerate from backend/ with:
+#   go tool oapi-codegen --config internal/adapters/httpapi/oapi-codegen.yaml ../api/openapi.yaml
+# The output path below is resolved against the working directory, so run it from backend/.
+#
+# include-operation-ids keeps ServerInterface down to the operations that are actually
+# implemented; the rest of the contract stays documented but unrouted. Add an id here
+# when its handler lands.
+package: httpapi
+output: internal/adapters/httpapi/httpapi.gen.go
+generate:
+  models: true
+  std-http-server: true
+  embedded-spec: false
+output-options:
+  include-operation-ids:
+    - getOverview
+    - listFeedItems
+    - subscribeFeed

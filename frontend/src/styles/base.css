@@ -1,0 +1,49 @@
+:root {
+  --bg: #ffffff;
+  --surface: #ffffff;
+  --surface-hover: #f6f8fa;
+  --border: #d0d7de;
+  --border-subtle: #eaeef2;
+  --text: #1f2328;
+  --text-soft: #424a53;
+  --text-muted: #656d76;
+  --accent: #0969da;
+  --danger: #cf222e;
+
+  /* The traffic-light palette. Owned here rather than by StatusIndicator, because the
+     status banner aligns its colours with these. */
+  --indicator-operational: #2da44e;
+  --indicator-degraded: #d4a72c;
+  --indicator-outage: #cf222e;
+  --indicator-unknown: #8b949e;
+
+  /* Stacking order. The banner sits above the modal on purpose: a failed save has to be
+     readable while the dialog is still open. */
+  --z-modal: 100;
+  --z-status-banner: 9999;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
