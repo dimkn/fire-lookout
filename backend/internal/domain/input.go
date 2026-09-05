@@ -7,8 +7,13 @@ import (
 )
 
 // MinRefreshInterval is the fastest poll cadence a feed may be given, mirroring the bound
-// published in api/openapi.yaml.
-const MinRefreshInterval = 30 * time.Second
+// published in api/openapi.yaml: any positive number of seconds is valid.
+//
+// The scheduler's tick is the practical floor — it only looks for due feeds every
+// scheduler.DefaultTick — so a cadence below that is effectively rounded up to it. That is a
+// deployment characteristic rather than a rule about the input, which is why it is not
+// enforced here.
+const MinRefreshInterval = 1 * time.Second
 
 // SubscribeInput is what a user provides to subscribe to a new feed. Only URL is
 // required; empty/zero fields fall back to defaults or the feed's own metadata. The
@@ -48,7 +53,7 @@ func (in SubscribeInput) Sanitize() (SubscribeInput, error) {
 	case out.RefreshInterval < MinRefreshInterval:
 		return SubscribeInput{}, ValidationError{
 			Field:   "refresh_interval_sec",
-			Message: "Refresh interval must be at least 30 seconds.",
+			Message: "Refresh interval must be a positive number of seconds.",
 		}
 	}
 

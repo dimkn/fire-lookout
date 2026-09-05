@@ -67,7 +67,7 @@ func run(addr, dbPath string, pollTick time.Duration) error {
 
 	handler := httpapi.NewRouter(
 		httpapi.NewServer(
-			application.NewStatusService(repo),
+			application.NewStatusService(repo, time.Now),
 			application.NewSubscriptionService(repo, fetcher),
 		),
 		"/api",

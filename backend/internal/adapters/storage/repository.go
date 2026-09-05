@@ -71,7 +71,10 @@ func (r *Repository) GetFeed(ctx context.Context, id int64) (domain.Feed, error)
 // ListLatestItems returns the newest item of every feed that has one, in a single query.
 // ROW_NUMBER() rather than a MAX() join, so feeds whose newest items share a timestamp
 // still yield exactly one row (the higher id wins).
-func (r *Repository) ListLatestItems(ctx context.Context) ([]domain.StatusItem, error) {
+//
+// The asOf filter sits INSIDE the subquery, before the ranking: a future-dated entry must
+// not be a candidate at all, or it would take rn = 1 and decide the feed's traffic-light.
+func (r *Repository) ListLatestItems(ctx context.Context, asOf time.Time) ([]domain.StatusItem, error) {
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT id, feed_id, guid, title, link, published_at, updated_at,
 		       content_html, content_text, current_status, fetched_at
@@ -81,8 +84,9 @@ func (r *Repository) ListLatestItems(ctx context.Context) ([]domain.StatusItem, 
 				ORDER BY COALESCE(published_at, updated_at, fetched_at) DESC, id DESC
 			) AS rn
 			FROM feed_item
+			WHERE COALESCE(published_at, updated_at, fetched_at) <= ?
 		)
-		WHERE rn = 1`)
+		WHERE rn = 1`, formatTime(asOf))
 	if err != nil {
 		return nil, fmt.Errorf("query latest items: %w", err)
 	}
@@ -91,13 +95,14 @@ func (r *Repository) ListLatestItems(ctx context.Context) ([]domain.StatusItem, 
 	return collectItems(rows)
 }
 
-// ListItems returns one feed's items, newest first, capped at limit. A non-nil since
-// restricts the result to items at or after that instant. Timestamps are compared as
-// stored text, which is safe because every one is fixed-width RFC3339 UTC.
-func (r *Repository) ListItems(ctx context.Context, feedID int64, since *time.Time, limit int) ([]domain.StatusItem, error) {
+// ListItems returns one feed's items, newest first, capped at q.Limit. Entries dated after
+// q.AsOf are excluded — they are announcements of things yet to happen, not history.
+// Timestamps are compared as stored text, which is safe because every one is fixed-width
+// RFC3339 UTC.
+func (r *Repository) ListItems(ctx context.Context, q domain.ItemQuery) ([]domain.StatusItem, error) {
 	var sinceArg any
-	if since != nil {
-		sinceArg = formatTime(*since)
+	if q.Since != nil {
+		sinceArg = formatTime(*q.Since)
 	}
 
 	rows, err := r.db.QueryContext(ctx, `
@@ -105,11 +110,12 @@ func (r *Repository) ListItems(ctx context.Context, feedID int64, since *time.Ti
 		       content_html, content_text, current_status, fetched_at
 		FROM feed_item
 		WHERE feed_id = ?
+		  AND COALESCE(published_at, updated_at, fetched_at) <= ?
 		  AND (? IS NULL OR COALESCE(published_at, updated_at, fetched_at) >= ?)
 		ORDER BY COALESCE(published_at, updated_at, fetched_at) DESC, id DESC
-		LIMIT ?`, feedID, sinceArg, sinceArg, limit)
+		LIMIT ?`, q.FeedID, formatTime(q.AsOf), sinceArg, sinceArg, q.Limit)
 	if err != nil {
-		return nil, fmt.Errorf("query items for feed %d: %w", feedID, err)
+		return nil, fmt.Errorf("query items for feed %d: %w", q.FeedID, err)
 	}
 	defer func() { _ = rows.Close() }()
 

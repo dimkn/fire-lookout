@@ -6,7 +6,7 @@ info:
     Backend↔frontend contract for the local status-page reader. This is the single
     source of truth (AGENTS.md §3, §6): the Go server stubs and the TypeScript client
     are generated from this file and must never be hand-edited.
-  version: 0.5.0 # tracks the root VERSION file (AGENTS.md §7)
+  version: 0.7.1 # tracks the root VERSION file (AGENTS.md §7)
 
 servers:
   - url: /api
@@ -411,7 +411,7 @@ components:
           description: When false, the feed is not polled.
         refresh_interval_sec:
           type: integer
-          minimum: 30
+          minimum: 1
           default: 300
           description: Poll cadence in seconds.
         current_status:
@@ -513,8 +513,11 @@ components:
             reference an existing group.
         refresh_interval_sec:
           type: integer
-          minimum: 30
-          description: Poll cadence in seconds; omitted means 300.
+          minimum: 1
+          description: >-
+            Poll cadence in seconds. Any positive value is accepted; omitted means 300.
+            Note that the scheduler only looks for due feeds every few seconds, so a
+            cadence below that tick is effectively rounded up to it.
         enabled:
           type: boolean
           description: Whether the feed is polled; omitted means true.
@@ -530,7 +533,7 @@ components:
           format: int64
         refresh_interval_sec:
           type: integer
-          minimum: 30
+          minimum: 1
         enabled:
           type: boolean
 

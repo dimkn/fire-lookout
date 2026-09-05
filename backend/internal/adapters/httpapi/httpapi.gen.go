@@ -155,7 +155,7 @@ type SubscribeFeedRequest struct {
 	// GroupId 0 == Ungrouped, which is also what an omitted value falls back to. Must reference an existing group.
 	GroupId *int64 `json:"group_id,omitempty"`
 
-	// RefreshIntervalSec Poll cadence in seconds; omitted means 300.
+	// RefreshIntervalSec Poll cadence in seconds. Any positive value is accepted; omitted means 300. Note that the scheduler only looks for due feeds every few seconds, so a cadence below that tick is effectively rounded up to it.
 	RefreshIntervalSec *int `json:"refresh_interval_sec,omitempty"`
 
 	// Title Display name for the system. Required, trimmed, and unique case-insensitively across feeds.

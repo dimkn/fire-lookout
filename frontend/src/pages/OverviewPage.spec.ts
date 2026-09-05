@@ -310,6 +310,30 @@ describe('OverviewPage', () => {
       expect(subscribeFeedMock).toHaveBeenCalledWith({
         title: 'Fastly',
         url: 'https://fastly.test/feed.atom',
+        refresh_interval_sec: 300,
+      })
+      wrapper.unmount()
+    })
+
+    // Cadence travels in seconds, the unit the API, the database and the poller share.
+    it('sends the cadence the user chose, in seconds', async () => {
+      const wrapper = await openDialog()
+      const dialog = wrapper.getComponent(AddIntegrationDialog)
+      const inputs = dialog.findAll('input')
+      await inputs[0].setValue('Fastly')
+      await inputs[1].setValue('https://fastly.test/feed.atom')
+      await dialog.get('select').setValue('30')
+
+      await dialog
+        .findAllComponents(AppButton)
+        .find((b) => b.props('label') === 'Save')!
+        .trigger('click')
+      await settle()
+
+      expect(subscribeFeedMock).toHaveBeenCalledWith({
+        title: 'Fastly',
+        url: 'https://fastly.test/feed.atom',
+        refresh_interval_sec: 30,
       })
       wrapper.unmount()
     })

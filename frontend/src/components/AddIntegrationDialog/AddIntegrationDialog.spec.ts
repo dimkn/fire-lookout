@@ -2,6 +2,7 @@ import { mount } from '@vue/test-utils'
 import { describe, expect, it } from 'vitest'
 
 import AppButton from '@/components/AppButton/AppButton.vue'
+import AppSelect from '@/components/AppSelect/AppSelect.vue'
 import AppTextField from '@/components/AppTextField/AppTextField.vue'
 
 import AddIntegrationDialog from './AddIntegrationDialog.vue'
@@ -22,12 +23,17 @@ async function fill(wrapper: ReturnType<typeof mountDialog>, name: string, url: 
   await fields[1].get('input').setValue(url)
 }
 
+async function chooseInterval(wrapper: ReturnType<typeof mountDialog>, seconds: number) {
+  await wrapper.getComponent(AppSelect).get('select').setValue(String(seconds))
+}
+
 describe('AddIntegrationDialog', () => {
-  it('asks for a name and an RSS link, and nothing else', () => {
+  it('asks for a name, an RSS link and a cadence — and nothing else', () => {
     const wrapper = mountDialog()
 
-    const labels = wrapper.findAllComponents(AppTextField).map((f) => f.props('label'))
-    expect(labels).toEqual(['Name', 'RSS link'])
+    const textLabels = wrapper.findAllComponents(AppTextField).map((f) => f.props('label'))
+    expect(textLabels).toEqual(['Name', 'RSS link'])
+    expect(wrapper.getComponent(AppSelect).props('label')).toBe('Check every')
 
     wrapper.unmount()
   })
@@ -40,17 +46,33 @@ describe('AddIntegrationDialog', () => {
     wrapper.unmount()
   })
 
-  it('starts empty', () => {
+  it('starts with empty text and a five-minute cadence', () => {
     const wrapper = mountDialog()
 
     const values = wrapper.findAll('input').map((i) => (i.element as HTMLInputElement).value)
     expect(values).toEqual(['', ''])
+    expect(wrapper.getComponent(AppSelect).props('modelValue')).toBe(300)
+
+    wrapper.unmount()
+  })
+
+  // Values are seconds: the same unit the request body, the database and the poller use.
+  it('offers the predefined cadences, in seconds', () => {
+    const wrapper = mountDialog()
+
+    expect(wrapper.getComponent(AppSelect).props('options')).toEqual([
+      { label: '30 seconds', value: 30 },
+      { label: '1 minute', value: 60 },
+      { label: '5 minutes', value: 300 },
+      { label: '10 minutes', value: 600 },
+      { label: '30 minutes', value: 1800 },
+    ])
 
     wrapper.unmount()
   })
 
   describe('Save availability', () => {
-    it('is unavailable until both fields hold something', async () => {
+    it('is unavailable until both text fields hold something', async () => {
       const wrapper = mountDialog()
       expect(saveButton(wrapper).props('disabled')).toBe(true)
 
@@ -86,17 +108,53 @@ describe('AddIntegrationDialog', () => {
       expect(saveButton(wrapper).props('disabled')).toBe(true)
       wrapper.unmount()
     })
+
+    // The cadence always holds one of the offered values, so it can never block Save.
+    it('does not depend on the cadence', async () => {
+      const wrapper = mountDialog()
+      await fill(wrapper, 'GitHub', 'https://a.test/feed.atom')
+
+      await chooseInterval(wrapper, 30)
+
+      expect(saveButton(wrapper).props('disabled')).toBe(false)
+      wrapper.unmount()
+    })
   })
 
-  it('submits trimmed values', async () => {
+  it('submits trimmed values with the default cadence', async () => {
     const wrapper = mountDialog()
     await fill(wrapper, '  GitHub  ', '  https://a.test/feed.atom  ')
 
     await saveButton(wrapper).trigger('click')
 
     expect(wrapper.emitted('submit')).toEqual([
-      [{ title: 'GitHub', url: 'https://a.test/feed.atom' }],
+      [{ title: 'GitHub', url: 'https://a.test/feed.atom', refresh_interval_sec: 300 }],
     ])
+    wrapper.unmount()
+  })
+
+  it('submits the cadence the user picked', async () => {
+    const wrapper = mountDialog()
+    await fill(wrapper, 'GitHub', 'https://a.test/feed.atom')
+
+    await chooseInterval(wrapper, 1800)
+    await saveButton(wrapper).trigger('click')
+
+    expect(wrapper.emitted('submit')).toEqual([
+      [{ title: 'GitHub', url: 'https://a.test/feed.atom', refresh_interval_sec: 1800 }],
+    ])
+    wrapper.unmount()
+  })
+
+  it('submits the 30-second floor when chosen', async () => {
+    const wrapper = mountDialog()
+    await fill(wrapper, 'GitHub', 'https://a.test/feed.atom')
+
+    await chooseInterval(wrapper, 30)
+    await saveButton(wrapper).trigger('click')
+
+    const payload = wrapper.emitted('submit')?.[0][0] as { refresh_interval_sec: number }
+    expect(payload.refresh_interval_sec).toBe(30)
     wrapper.unmount()
   })
 

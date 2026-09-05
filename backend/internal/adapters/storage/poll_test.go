@@ -149,7 +149,7 @@ func TestSaveItemsStoresEntries(t *testing.T) {
 		t.Fatalf("SaveItems() error = %v", err)
 	}
 
-	stored, err := repo.ListItems(context.Background(), 1, nil, 50)
+	stored, err := repo.ListItems(context.Background(), domain.ItemQuery{FeedID: 1, Since: nil, AsOf: farFuture, Limit: 50})
 	if err != nil {
 		t.Fatalf("ListItems() error = %v", err)
 	}
@@ -180,7 +180,7 @@ func TestSaveItemsRevisesAnEntryInPlace(t *testing.T) {
 		t.Fatalf("second SaveItems() error = %v", err)
 	}
 
-	stored, err := repo.ListItems(context.Background(), 1, nil, 50)
+	stored, err := repo.ListItems(context.Background(), domain.ItemQuery{FeedID: 1, Since: nil, AsOf: farFuture, Limit: 50})
 	if err != nil {
 		t.Fatalf("ListItems() error = %v", err)
 	}
@@ -217,7 +217,7 @@ func TestSaveItemsKeepsAbsentFieldsNull(t *testing.T) {
 		t.Fatalf("SaveItems() error = %v", err)
 	}
 
-	stored, err := repo.ListItems(context.Background(), 1, nil, 50)
+	stored, err := repo.ListItems(context.Background(), domain.ItemQuery{FeedID: 1, Since: nil, AsOf: farFuture, Limit: 50})
 	if err != nil {
 		t.Fatalf("ListItems() error = %v", err)
 	}
@@ -361,7 +361,7 @@ func TestPruneItemsDropsOnlyOldEntries(t *testing.T) {
 		t.Errorf("removed %d items, want 1", removed)
 	}
 
-	left, err := repo.ListItems(context.Background(), 1, nil, 50)
+	left, err := repo.ListItems(context.Background(), domain.ItemQuery{FeedID: 1, Since: nil, AsOf: farFuture, Limit: 50})
 	if err != nil {
 		t.Fatalf("ListItems() error = %v", err)
 	}
@@ -381,7 +381,7 @@ func TestPruneItemsLeavesOtherFeedsAlone(t *testing.T) {
 		t.Fatalf("PruneItems() error = %v", err)
 	}
 
-	theirs, err := repo.ListItems(context.Background(), 2, nil, 50)
+	theirs, err := repo.ListItems(context.Background(), domain.ItemQuery{FeedID: 2, Since: nil, AsOf: farFuture, Limit: 50})
 	if err != nil {
 		t.Fatalf("ListItems() error = %v", err)
 	}

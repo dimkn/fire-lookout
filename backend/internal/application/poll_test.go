@@ -68,7 +68,7 @@ func (r *pollRepo) PruneItems(_ context.Context, feedID int64, before time.Time)
 // The read side is unused by the poller but required by the port.
 func (r *pollRepo) ListFeeds(context.Context) ([]domain.Feed, error) { return nil, nil }
 
-func (r *pollRepo) ListLatestItems(context.Context) ([]domain.StatusItem, error) {
+func (r *pollRepo) ListLatestItems(context.Context, time.Time) ([]domain.StatusItem, error) {
 	return nil, nil
 }
 
@@ -76,7 +76,7 @@ func (r *pollRepo) GetFeed(context.Context, int64) (domain.Feed, error) {
 	return domain.Feed{}, domain.ErrNotFound
 }
 
-func (r *pollRepo) ListItems(context.Context, int64, *time.Time, int) ([]domain.StatusItem, error) {
+func (r *pollRepo) ListItems(context.Context, domain.ItemQuery) ([]domain.StatusItem, error) {
 	return nil, nil
 }
 func (r *pollRepo) FeedExistsByURL(context.Context, string) (bool, error)   { return false, nil }

@@ -8,6 +8,9 @@ export type Indicator = components['schemas']['Indicator']
 export type Status = components['schemas']['Status']
 export type ApiErrorBody = components['schemas']['Error']
 
+/** The create payload, straight from the contract — no hand-written shape to drift. */
+export type SubscribeFeedRequest = components['schemas']['SubscribeFeedRequest']
+
 /**
  * A request that did not succeed. serverMessage is the contract's Error.message when the
  * backend sent one — it is written for humans, so callers may show it verbatim.
@@ -62,8 +65,11 @@ export async function fetchFeedItems(feedId: number): Promise<StatusItem[]> {
 /**
  * Subscribes to a new feed. The backend validates the input and fetches the URL once to
  * prove it is really a feed, so this can fail with a message worth showing the user.
+ *
+ * Cadence travels as `refresh_interval_sec` — seconds, the same unit the database and the
+ * poller use, so nothing has to convert anything.
  */
-export async function subscribeFeed(input: { title: string; url: string }): Promise<Feed> {
+export async function subscribeFeed(input: SubscribeFeedRequest): Promise<Feed> {
   const { data, error, response } = await client.POST('/feeds', { body: input })
   if (error || !response.ok || !data) {
     throw fail('add integration', response, error)

@@ -17,11 +17,16 @@ import (
 // system's incident history.
 type StatusService struct {
 	repo domain.StatusRepository
+	now  func() time.Time
 }
 
-// NewStatusService wires the service to a repository.
-func NewStatusService(repo domain.StatusRepository) *StatusService {
-	return &StatusService{repo: repo}
+// NewStatusService wires the service to a repository. now is injected so tests can pin the
+// clock; it decides which entries count as history rather than as announcements.
+func NewStatusService(repo domain.StatusRepository, now func() time.Time) *StatusService {
+	if now == nil {
+		now = time.Now
+	}
+	return &StatusService{repo: repo, now: now}
 }
 
 // Overview returns one row per subscribed system, ordered by title (case-insensitively,
@@ -33,7 +38,9 @@ func (s *StatusService) Overview(ctx context.Context) ([]domain.SystemOverview, 
 		return nil, fmt.Errorf("list feeds: %w", err)
 	}
 
-	latest, err := s.repo.ListLatestItems(ctx)
+	// A feed's newest entry as of *now*: anything dated later is an announcement of work
+	// still to come, and must not decide the light.
+	latest, err := s.repo.ListLatestItems(ctx, s.now().UTC())
 	if err != nil {
 		return nil, fmt.Errorf("list latest items: %w", err)
 	}
@@ -78,7 +85,12 @@ func (s *StatusService) FeedItems(ctx context.Context, feedID int64, since *time
 		limit = domain.MaxItemLimit
 	}
 
-	items, err := s.repo.ListItems(ctx, feedID, since, limit)
+	items, err := s.repo.ListItems(ctx, domain.ItemQuery{
+		FeedID: feedID,
+		Since:  since,
+		AsOf:   s.now().UTC(),
+		Limit:  limit,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("list items for feed %d: %w", feedID, err)
 	}

@@ -17,15 +17,15 @@ type StatusRepository interface {
 	// ListLatestItems returns the newest status item of every feed that has one — at
 	// most one item per feed, in no particular order. It exists so the overview can be
 	// assembled without a query per feed.
-	ListLatestItems(ctx context.Context) ([]StatusItem, error)
+	//
+	// Entries dated after asOf are ignored: see ItemQuery.AsOf.
+	ListLatestItems(ctx context.Context, asOf time.Time) ([]StatusItem, error)
 
 	// GetFeed returns one feed, or a wrapped ErrNotFound.
 	GetFeed(ctx context.Context, id int64) (Feed, error)
 
-	// ListItems returns a feed's status items, newest first. A non-nil since restricts
-	// the result to items at or after that instant; limit is a hard maximum and is
-	// expected to already be clamped by the caller.
-	ListItems(ctx context.Context, feedID int64, since *time.Time, limit int) ([]StatusItem, error)
+	// ListItems returns a feed's status items, newest first.
+	ListItems(ctx context.Context, q ItemQuery) ([]StatusItem, error)
 
 	// FeedExistsByURL reports whether a feed with this exact url is already subscribed.
 	FeedExistsByURL(ctx context.Context, url string) (bool, error)
@@ -52,6 +52,26 @@ type StatusRepository interface {
 
 	// PruneItems deletes a feed's items older than before, and reports how many went.
 	PruneItems(ctx context.Context, feedID int64, before time.Time) (int64, error)
+}
+
+// ItemQuery selects a feed's status items. The two bounds are a struct rather than adjacent
+// parameters because they are both times and mean opposite things — swapping them by mistake
+// would be silent.
+type ItemQuery struct {
+	FeedID int64
+
+	// Since restricts the result to items at or after this instant. Optional.
+	Since *time.Time
+
+	// AsOf is the upper bound, and it is not cosmetic. Statuspage-style feeds publish
+	// scheduled maintenance dated when the window will OPEN, so a feed routinely carries
+	// entries days in the future. Those are announcements, not history: counting them would
+	// let next week's maintenance decide today's traffic-light, and would put them at the
+	// top of the incident list. They become visible when their time arrives.
+	AsOf time.Time
+
+	// Limit is a hard maximum, expected to be clamped by the caller already.
+	Limit int
 }
 
 // PollOutcome is what one poll attempt amounted to.

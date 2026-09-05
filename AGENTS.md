@@ -144,6 +144,18 @@ hand-written.
     (`Mon, 24 Aug 2026 09:30:00 GMT`) because it is echoed back verbatim. Never normalise it.
   - **Retention:** after each successful poll, prune `feed_item` older than
     `domain.RetentionWindow` (7 days); `feed`/`feed_group` rows are never pruned.
+- **Cadence is in seconds, everywhere.** `refresh_interval_sec` is the unit on the wire, in
+  the `feed` column and in the due-check SQL, so nothing between the browser and the poller
+  converts anything. The Add dialog offers a fixed set — 30s / 1m / 5m / 10m / 30m, defaulting
+  to 5 minutes — and sends the chosen number of seconds; the API itself accepts **any positive
+  integer** (`domain.MinRefreshInterval` = 1s), and an omitted value — or an explicit `0`,
+  which is indistinguishable from omitted once it is a `time.Duration` — falls back to
+  `domain.DefaultRefreshInterval` (300s). The **scheduler tick is the practical floor**: a
+  cadence below `scheduler.DefaultTick` (15s) is effectively rounded up to it, since that is
+  how often due feeds are looked for. That is a deployment characteristic, not an input rule,
+  so it is deliberately not validated. Go uses `time.Duration` internally and converts at
+  exactly two edges — `httpapi` and `storage` — so a bare integer can never be mistaken for
+  nanoseconds inside the domain.
 - **Polling.** `adapters/scheduler` ticks (default 15s, `-poll-tick`) and asks
   `application.PollService` for the feeds that are **due**: `enabled = 1` and
   `last_fetched_at + refresh_interval_sec <= now`, plus anything never polled. `enabled` is a
@@ -174,6 +186,14 @@ hand-written.
   unless every check passes. The validation fetch is **not** a poll — it stores no incidents
   and leaves the health columns null, so a new system shows an unknown (grey) light until the
   poller reads it (which, with the scheduler running, is within a tick).
+- **Entries dated in the future are announcements, not history.** Statuspage dates a
+  scheduled-maintenance entry when the window will *open*, so a feed routinely carries entries
+  days ahead — Cloudflare typically has ~15. Both read queries therefore take an `AsOf` bound
+  (`ListLatestItems`, `domain.ItemQuery`) and ignore anything later: otherwise next week's
+  maintenance becomes the "latest" entry, paints a healthy system yellow, stamps the row with a
+  future date, and buries today's real incident under it. Rows stay in the database and appear
+  the moment their time arrives, so a maintenance window that has *started* still shows yellow.
+  The bound comes from `StatusService`'s injected clock.
 - **Read model / traffic-light.** `GET /overview` backs the main page: one row per feed, no
   parameters, and no incidents (a card lazily fetches its own from `GET /feeds/{feedId}/items`).
   The `Indicator` (green/yellow/red/grey) is derived in `domain` — never in the frontend — from
@@ -183,7 +203,7 @@ hand-written.
   (`last_error`) does **not** repaint a known-good system; it travels as feed data for the
   expanded card. See `domain.NewSystemOverview`.
 - **Errors:** return wrapped errors (`fmt.Errorf("...: %w", err)`); the httpapi adapter
-fire-lookoutfire-lookoutfire-lookoutfire-lookout  maps domain errors to HTTP status codes.
+  maps domain errors to HTTP status codes.
 - **Generated code:** lives beside its adapter and is named `*.gen.go`. Regenerated, never
   edited by hand (see §6).
 - **Testing:** stdlib `testing`, table-driven; `net/http/httptest` for the httpapi adapter;
@@ -328,7 +348,7 @@ Verified against the repo. Keep them accurate — agents rely on this section.
 - Migrations are applied automatically on startup (embedded, idempotent); the `goose` CLI is
   not required.
 
-fire-lookoutfire-lookoutfire-lookoutfire-lookoutfire-lookoutfire-lookout**Frontend** (`cd frontend`)
+**Frontend** (`cd frontend`)
 - Install: `corepack yarn install` (Yarn 4 via the `packageManager` field; a bare `yarn` may be
   a different global install)
 - Dev server: `corepack yarn dev` — serves the UI on :5173 and proxies `/api` to :8080, so run

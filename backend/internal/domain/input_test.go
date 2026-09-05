@@ -134,17 +134,63 @@ func TestSanitizeSubscribeInputHonoursExplicitValues(t *testing.T) {
 	}
 }
 
-func TestSanitizeSubscribeInputRejectsTooFrequentPolling(t *testing.T) {
-	in := SubscribeInput{
+// Any positive cadence is valid input. A value below the scheduler's tick is honoured as far
+// as the tick allows, which is a deployment characteristic rather than a reason to reject it.
+func TestSanitizeSubscribeInputAcceptsAnyPositiveCadence(t *testing.T) {
+	for _, interval := range []time.Duration{
+		MinRefreshInterval, // the floor: one second
+		time.Second,
+		5 * time.Second, // below the scheduler tick, still valid
+		30 * time.Second,
+		DefaultRefreshInterval,
+		24 * time.Hour,
+	} {
+		t.Run(interval.String(), func(t *testing.T) {
+			got, err := SubscribeInput{
+				URL:             "https://a.test/feed.atom",
+				Title:           "GitHub",
+				RefreshInterval: interval,
+			}.Sanitize()
+			if err != nil {
+				t.Fatalf("Sanitize() error = %v, want %v accepted", err, interval)
+			}
+			if got.RefreshInterval != interval {
+				t.Errorf("RefreshInterval = %v, want %v unchanged", got.RefreshInterval, interval)
+			}
+		})
+	}
+}
+
+func TestSanitizeSubscribeInputRejectsANonPositiveCadence(t *testing.T) {
+	for _, interval := range []time.Duration{-time.Second, -time.Hour} {
+		t.Run(interval.String(), func(t *testing.T) {
+			_, err := SubscribeInput{
+				URL:             "https://a.test/feed.atom",
+				Title:           "GitHub",
+				RefreshInterval: interval,
+			}.Sanitize()
+
+			var ve ValidationError
+			if !errors.As(err, &ve) || ve.Field != "refresh_interval_sec" {
+				t.Fatalf("error = %v, want a refresh_interval_sec ValidationError", err)
+			}
+		})
+	}
+}
+
+// Zero means "the caller said nothing", which is indistinguishable from an omitted field
+// once it is a Duration — so it takes the default rather than being rejected.
+func TestSanitizeSubscribeInputTreatsZeroCadenceAsAbsent(t *testing.T) {
+	got, err := SubscribeInput{
 		URL:             "https://a.test/feed.atom",
 		Title:           "GitHub",
-		RefreshInterval: MinRefreshInterval - time.Second,
+		RefreshInterval: 0,
+	}.Sanitize()
+	if err != nil {
+		t.Fatalf("Sanitize() error = %v", err)
 	}
 
-	_, err := in.Sanitize()
-
-	var ve ValidationError
-	if !errors.As(err, &ve) || ve.Field != "refresh_interval_sec" {
-		t.Fatalf("error = %v, want a refresh_interval_sec ValidationError", err)
+	if got.RefreshInterval != DefaultRefreshInterval {
+		t.Errorf("RefreshInterval = %v, want the default %v", got.RefreshInterval, DefaultRefreshInterval)
 	}
 }
