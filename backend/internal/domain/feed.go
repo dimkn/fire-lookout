@@ -47,6 +47,12 @@ type Feed struct {
 	LastSuccessAt *time.Time // last successful poll; nil until first success
 	LastError     string     // last failure message; empty when healthy
 
+	// Conditional-GET validators from the last successful poll, carried opaquely: they are
+	// echoed back verbatim so an unchanged feed answers 304. LastModified is an HTTP-date,
+	// not our RFC3339 convention — never reformat either of them.
+	ETag         string
+	LastModified string
+
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }

@@ -26,7 +26,8 @@ func NewRepository(db *sql.DB) *Repository {
 func (r *Repository) ListFeeds(ctx context.Context) ([]domain.Feed, error) {
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT id, url, title, group_id, enabled, refresh_interval_sec,
-		       last_fetched_at, last_success_at, last_error, created_at, updated_at
+		       last_fetched_at, last_success_at, last_error, http_etag, http_last_modified,
+		       created_at, updated_at
 		FROM feed
 		ORDER BY id`)
 	if err != nil {
@@ -52,7 +53,8 @@ func (r *Repository) ListFeeds(ctx context.Context) ([]domain.Feed, error) {
 func (r *Repository) GetFeed(ctx context.Context, id int64) (domain.Feed, error) {
 	row := r.db.QueryRowContext(ctx, `
 		SELECT id, url, title, group_id, enabled, refresh_interval_sec,
-		       last_fetched_at, last_success_at, last_error, created_at, updated_at
+		       last_fetched_at, last_success_at, last_error, http_etag, http_last_modified,
+		       created_at, updated_at
 		FROM feed
 		WHERE id = ?`, id)
 
@@ -191,19 +193,21 @@ type scanner interface {
 
 func scanFeed(s scanner) (domain.Feed, error) {
 	var (
-		feed        domain.Feed
-		enabled     int64
-		intervalSec int64
-		lastFetched sql.NullString
-		lastSuccess sql.NullString
-		lastError   sql.NullString
-		createdAt   string
-		updatedAt   string
+		feed         domain.Feed
+		enabled      int64
+		intervalSec  int64
+		lastFetched  sql.NullString
+		lastSuccess  sql.NullString
+		lastError    sql.NullString
+		etag         sql.NullString
+		lastModified sql.NullString
+		createdAt    string
+		updatedAt    string
 	)
 
 	if err := s.Scan(
 		&feed.ID, &feed.URL, &feed.Title, &feed.GroupID, &enabled, &intervalSec,
-		&lastFetched, &lastSuccess, &lastError, &createdAt, &updatedAt,
+		&lastFetched, &lastSuccess, &lastError, &etag, &lastModified, &createdAt, &updatedAt,
 	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return domain.Feed{}, err
@@ -214,6 +218,9 @@ func scanFeed(s scanner) (domain.Feed, error) {
 	feed.Enabled = enabled != 0
 	feed.RefreshInterval = time.Duration(intervalSec) * time.Second
 	feed.LastError = lastError.String
+	// Opaque validators, kept exactly as the provider sent them.
+	feed.ETag = etag.String
+	feed.LastModified = lastModified.String
 
 	var err error
 	if feed.LastFetchedAt, err = parseNullTime(lastFetched); err != nil {

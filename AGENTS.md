@@ -49,6 +49,7 @@ hand-written.
 │       ├── application/           # Use cases (fetch feeds, expose status). Orchestrates ports.
 │       └── adapters/              # Implementations of ports (the "hexagon" edges).
 │           ├── httpapi/           # DRIVING adapter: oapi-codegen stdlib net/http handlers.
+│           ├── scheduler/         # DRIVING adapter: the clock that runs the poller.
 │           ├── feed/              # DRIVEN adapter: gofeed-backed feed fetcher.
 │           └── storage/           # DRIVEN adapter: SQLite repository.
 │               └── migrations/    # Embedded *.sql schema migrations (goose).
@@ -138,19 +139,41 @@ hand-written.
     timelines are intentionally **not** parsed (yet).
   - **Timestamps:** every time column is TEXT, RFC3339, **UTC**, second-precision; normalize
     on write (`t.UTC().Format(time.RFC3339)`). `group_id` is a plain `int64` in Go (`0` =
-    ungrouped), never a nullable pointer.
-  - **Retention:** after each successful poll, prune `feed_item` older than a configurable
-    window (default ~7 days); `feed`/`feed_group` rows are never pruned.
-  - **Fetching:** the poller always re-fetches and re-parses — no HTTP conditional-GET
-    (ETag/Last-Modified) bookkeeping yet; add it if a provider rate-limits.
+    ungrouped), never a nullable pointer. **The one exception** is
+    `feed.http_last_modified`: it holds an HTTP-date exactly as the provider sent it
+    (`Mon, 24 Aug 2026 09:30:00 GMT`) because it is echoed back verbatim. Never normalise it.
+  - **Retention:** after each successful poll, prune `feed_item` older than
+    `domain.RetentionWindow` (7 days); `feed`/`feed_group` rows are never pruned.
+- **Polling.** `adapters/scheduler` ticks (default 15s, `-poll-tick`) and asks
+  `application.PollService` for the feeds that are **due**: `enabled = 1` and
+  `last_fetched_at + refresh_interval_sec <= now`, plus anything never polled. `enabled` is a
+  pause switch, not soft deletion — a disabled feed is simply never due, and there is no
+  `deleted_at` anywhere. At most 4 feeds are fetched at once, and one feed's failure never
+  aborts the run.
+  - **Conditional GET.** `feed.http_etag` / `feed.http_last_modified` are stored after a
+    successful poll and sent back as `If-None-Match` / `If-Modified-Since`, so an unchanged
+    feed answers `304` with no body. Both are kept because providers differ: GitHub, Datadog
+    and npm send ETags; Azure and Cloudflare only send `Last-Modified`. A `304` counts as a
+    **successful** poll — we asked and learned nothing changed — so it advances
+    `last_success_at`. This is why the `feed/` adapter owns its own `http.Request` rather than
+    calling gofeed's `ParseURL`, which hides the response.
+  - **Outcomes.** `updated` stores entries and refreshes the validators; `not_modified` just
+    advances the clocks; **`rate_limited` (HTTP 429) is not a failure** — the attempt is
+    recorded so the feed waits a full interval, and `last_error` / `last_success_at` are left
+    untouched; `failed` records the reason and keeps the previous `last_success_at`. A failing
+    feed is retried on its normal cadence — no backoff, and no `Retry-After` handling yet.
+  - **Status derivation.** `domain.ParseStatus` reads the Atlassian Statuspage vocabulary
+    ("Resolved - …", "Monitoring - …", "Scheduled - …") from an entry's body, falling back to
+    its title. Statuspage concatenates updates newest-first, so the **first** marker is the
+    current state — an assumption, not a guarantee. Anything unrecognised stays `unknown`,
+    which the UI renders honestly as grey.
 - **Subscribing is validate-then-write.** `POST /feeds` sanitises the input (every string
   trimmed, empties rejected, http(s) URLs only), rejects a duplicate URL or name, and only
   then fetches the endpoint once through the `FeedFetcher` port to prove it really is a feed.
   Cheapest checks first: a duplicate never costs a network round trip, and nothing is written
   unless every check passes. The validation fetch is **not** a poll — it stores no incidents
   and leaves the health columns null, so a new system shows an unknown (grey) light until the
-  poller reads it. The `feed/` adapter therefore exists for validation only today; polling is
-  still a later slice.
+  poller reads it (which, with the scheduler running, is within a tick).
 - **Read model / traffic-light.** `GET /overview` backs the main page: one row per feed, no
   parameters, and no incidents (a card lazily fetches its own from `GET /feeds/{feedId}/items`).
   The `Indicator` (green/yellow/red/grey) is derived in `domain` — never in the frontend — from
@@ -160,7 +183,7 @@ hand-written.
   (`last_error`) does **not** repaint a known-good system; it travels as feed data for the
   expanded card. See `domain.NewSystemOverview`.
 - **Errors:** return wrapped errors (`fmt.Errorf("...: %w", err)`); the httpapi adapter
-  maps domain errors to HTTP status codes.
+fire-lookoutfire-lookoutfire-lookoutfire-lookout  maps domain errors to HTTP status codes.
 - **Generated code:** lives beside its adapter and is named `*.gen.go`. Regenerated, never
   edited by hand (see §6).
 - **Testing:** stdlib `testing`, table-driven; `net/http/httptest` for the httpapi adapter;
@@ -289,7 +312,9 @@ Verified against the repo. Keep them accurate — agents rely on this section.
 - Build: `go build -ldflags "-X main.version=$(cat ../VERSION)" -o bin/status-page ./cmd/status-page`
 - Run (API on :8080, database at the repo-root `data/`): `go run ./cmd/status-page -db ../data/fire-lookout.db`
   - Flags: `-addr` (default `:8080`, env `RSS_READER_ADDR`), `-db` (default `./data/fire-lookout.db`,
-    env `RSS_READER_DB`).
+    env `RSS_READER_DB`), `-poll-tick` (default `15s`, env `RSS_READER_POLL_TICK`) — how often
+    the scheduler looks for due feeds, *not* a feed's cadence.
+  - The poller runs in-process alongside the API and stops with it.
 - Test: `go test ./...`
 - Vet: `go vet ./...`
 - Lint: `golangci-lint run` (config: `backend/.golangci.yml`; requires golangci-lint ≥ v2;
@@ -303,7 +328,7 @@ Verified against the repo. Keep them accurate — agents rely on this section.
 - Migrations are applied automatically on startup (embedded, idempotent); the `goose` CLI is
   not required.
 
-**Frontend** (`cd frontend`)
+fire-lookoutfire-lookoutfire-lookoutfire-lookoutfire-lookoutfire-lookout**Frontend** (`cd frontend`)
 - Install: `corepack yarn install` (Yarn 4 via the `packageManager` field; a bare `yarn` may be
   a different global install)
 - Dev server: `corepack yarn dev` — serves the UI on :5173 and proxies `/api` to :8080, so run

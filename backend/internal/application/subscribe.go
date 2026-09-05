@@ -49,7 +49,8 @@ func (s *SubscriptionService) SubscribeFeed(ctx context.Context, in domain.Subsc
 		return domain.Feed{}, fmt.Errorf("subscribe %q: %w", input.Title, domain.ErrDuplicateTitle)
 	}
 
-	if _, err := s.fetcher.Fetch(ctx, input.URL); err != nil {
+	// No validators: this is the first time we have ever looked at this URL.
+	if _, err := s.fetcher.Fetch(ctx, domain.FetchRequest{URL: input.URL}); err != nil {
 		return domain.Feed{}, fmt.Errorf("validate feed %q: %w", input.URL, err)
 	}
 

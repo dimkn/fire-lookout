@@ -49,6 +49,17 @@ func (r *fakeRepo) FeedExistsByTitle(_ context.Context, title string) (bool, err
 	return r.titleExists, r.titleExistsErr
 }
 
+// The poller's methods; the read-side tests do not exercise them (see poll_test.go).
+func (r *fakeRepo) DueFeeds(context.Context, time.Time) ([]domain.Feed, error) {
+	return nil, nil
+}
+
+func (r *fakeRepo) SaveItems(context.Context, int64, []domain.StatusItem) error { return nil }
+
+func (r *fakeRepo) RecordPoll(context.Context, domain.PollResult) error { return nil }
+
+func (r *fakeRepo) PruneItems(context.Context, int64, time.Time) (int64, error) { return 0, nil }
+
 func (r *fakeRepo) CreateFeed(_ context.Context, feed domain.Feed) (domain.Feed, error) {
 	r.createCalls++
 	if r.createErr != nil {

@@ -41,7 +41,7 @@ func TestFetchReadsAnAtomFeed(t *testing.T) {
 		_, _ = w.Write([]byte(atomFeed))
 	})
 
-	got, err := NewFetcher(0).Fetch(context.Background(), url)
+	got, err := NewFetcher(0, "test").Fetch(context.Background(), domain.FetchRequest{URL: url})
 	if err != nil {
 		t.Fatalf("Fetch() error = %v", err)
 	}
@@ -55,7 +55,7 @@ func TestFetchReadsAnRSSFeed(t *testing.T) {
 		_, _ = w.Write([]byte(rssFeed))
 	})
 
-	got, err := NewFetcher(0).Fetch(context.Background(), url)
+	got, err := NewFetcher(0, "test").Fetch(context.Background(), domain.FetchRequest{URL: url})
 	if err != nil {
 		t.Fatalf("Fetch() error = %v", err)
 	}
@@ -112,7 +112,7 @@ func TestFetchRejectsWhatIsNotAFeed(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			url := serve(t, tt.handler)
 
-			_, err := NewFetcher(0).Fetch(context.Background(), url)
+			_, err := NewFetcher(0, "test").Fetch(context.Background(), domain.FetchRequest{URL: url})
 
 			if !errors.Is(err, domain.ErrFeedUnreachable) {
 				t.Errorf("error = %v, want ErrFeedUnreachable", err)
@@ -127,7 +127,7 @@ func TestFetchRejectsAnUnreachableHost(t *testing.T) {
 	url := server.URL
 	server.Close()
 
-	_, err := NewFetcher(0).Fetch(context.Background(), url)
+	_, err := NewFetcher(0, "test").Fetch(context.Background(), domain.FetchRequest{URL: url})
 
 	if !errors.Is(err, domain.ErrFeedUnreachable) {
 		t.Errorf("error = %v, want ErrFeedUnreachable", err)
@@ -143,7 +143,7 @@ func TestFetchGivesUpOnASlowServer(t *testing.T) {
 		_, _ = w.Write([]byte(atomFeed))
 	})
 
-	_, err := NewFetcher(50*time.Millisecond).Fetch(context.Background(), url)
+	_, err := NewFetcher(50*time.Millisecond, "test").Fetch(context.Background(), domain.FetchRequest{URL: url})
 
 	if !errors.Is(err, domain.ErrFeedUnreachable) {
 		t.Errorf("error = %v, want ErrFeedUnreachable after the timeout", err)
@@ -162,7 +162,7 @@ func TestFetchStopsWhenTheCallerCancels(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 
-	_, err := NewFetcher(0).Fetch(ctx, url)
+	_, err := NewFetcher(0, "test").Fetch(ctx, domain.FetchRequest{URL: url})
 
 	if !errors.Is(err, domain.ErrFeedUnreachable) {
 		t.Errorf("error = %v, want ErrFeedUnreachable when the context is cancelled", err)
@@ -175,7 +175,7 @@ func TestFetchAlwaysReportsTheDomainSentinel(t *testing.T) {
 		w.WriteHeader(http.StatusTeapot)
 	})
 
-	_, err := NewFetcher(0).Fetch(context.Background(), url)
+	_, err := NewFetcher(0, "test").Fetch(context.Background(), domain.FetchRequest{URL: url})
 
 	if !errors.Is(err, domain.ErrFeedUnreachable) {
 		t.Fatalf("error = %v, want ErrFeedUnreachable", err)
