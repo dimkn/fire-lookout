@@ -3,6 +3,7 @@ package application
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"fire-lookout/backend/internal/domain"
 )
@@ -49,7 +50,8 @@ func (s *SubscriptionService) SubscribeFeed(ctx context.Context, in domain.Subsc
 		return domain.Feed{}, fmt.Errorf("subscribe %q: %w", input.Title, domain.ErrDuplicateTitle)
 	}
 
-	if _, err := s.fetcher.Fetch(ctx, input.URL); err != nil {
+	// No validators: this is the first time we have ever looked at this URL.
+	if _, err := s.fetcher.Fetch(ctx, domain.FetchRequest{URL: input.URL}); err != nil {
 		return domain.Feed{}, fmt.Errorf("validate feed %q: %w", input.URL, err)
 	}
 
@@ -66,4 +68,47 @@ func (s *SubscriptionService) SubscribeFeed(ctx context.Context, in domain.Subsc
 		return domain.Feed{}, fmt.Errorf("create feed: %w", err)
 	}
 	return created, nil
+}
+
+// UpdateFeed applies a partial update — the pause switch, the name, the cadence, the group.
+//
+// Unlike subscribing, the feed's URL cannot change, so there is nothing to re-validate over
+// the network: no fetch happens here. Pausing therefore takes effect immediately, which is
+// the point of a switch.
+func (s *SubscriptionService) UpdateFeed(ctx context.Context, id int64, in domain.UpdateFeedInput) (domain.Feed, error) {
+	input, err := in.Sanitize()
+	if err != nil {
+		return domain.Feed{}, err
+	}
+	if input.IsEmpty() {
+		return domain.Feed{}, domain.ValidationError{
+			Field:   "body",
+			Message: "Nothing to update.",
+		}
+	}
+
+	// The unique index is the real guard; checking first turns the common case into a clear
+	// conflict instead of a constraint violation.
+	if input.Title != nil {
+		taken, err := s.repo.FeedExistsByTitle(ctx, *input.Title)
+		if err != nil {
+			return domain.Feed{}, fmt.Errorf("look up feed title: %w", err)
+		}
+		if taken {
+			current, err := s.repo.GetFeed(ctx, id)
+			if err != nil {
+				return domain.Feed{}, fmt.Errorf("get feed %d: %w", id, err)
+			}
+			// Renaming a feed to the name it already has is a no-op, not a conflict.
+			if !strings.EqualFold(current.Title, *input.Title) {
+				return domain.Feed{}, fmt.Errorf("update %q: %w", *input.Title, domain.ErrDuplicateTitle)
+			}
+		}
+	}
+
+	updated, err := s.repo.UpdateFeed(ctx, id, input)
+	if err != nil {
+		return domain.Feed{}, fmt.Errorf("update feed %d: %w", id, err)
+	}
+	return updated, nil
 }

@@ -35,7 +35,11 @@ hand-written.
 ├── README.md                      # Short pointer to this file.
 ├── VERSION                        # Single semver version for the whole tool.
 ├── .gitignore
+├── .dockerignore                  # Build context trimming (context = repo root).
 ├── docker-compose.yml             # Local dev convenience (one service).
+│
+├── docs/                          # Longer-form notes that would bloat this file.
+│   └── security-hardening.md      # Reviewed security findings, as shippable slices.
 │
 ├── api/
 │   └── openapi.yaml               # THE contract. Single source of truth for BE↔FE.
@@ -43,12 +47,16 @@ hand-written.
 ├── backend/                       # Go module. Hexagonal architecture.
 │   ├── go.mod / go.sum
 │   ├── cmd/
-│   │   └── status-page/           # main(): wires adapters, embeds FE assets, serves.
+│   │   └── status-page/           # main(): wires adapters, mounts /api + the SPA, serves.
 │   └── internal/
 │       ├── domain/                # Entities + PORTS (interfaces). No external deps.
 │       ├── application/           # Use cases (fetch feeds, expose status). Orchestrates ports.
 │       └── adapters/              # Implementations of ports (the "hexagon" edges).
 │           ├── httpapi/           # DRIVING adapter: oapi-codegen stdlib net/http handlers.
+│           ├── scheduler/         # DRIVING adapter: the clock that runs the poller.
+│           ├── webui/             # DRIVING adapter: serves the SPA embedded in the binary.
+│           │   └── dist/          # Vite output, filled in by the Docker build. Gitignored
+│           │                      # except .gitkeep, which keeps go:embed compiling.
 │           ├── feed/              # DRIVEN adapter: gofeed-backed feed fetcher.
 │           └── storage/           # DRIVEN adapter: SQLite repository.
 │               └── migrations/    # Embedded *.sql schema migrations (goose).
@@ -104,6 +112,8 @@ hand-written.
   - `adapters/` — concrete implementations that plug into ports:
     - `httpapi/` — **driving** side. Generated `net/http` server (Go 1.22+ `ServeMux`)
       from OpenAPI via `oapi-codegen`; thin handlers delegate to application use cases.
+    - `webui/` — **driving** side. Serves the Vue SPA embedded in the binary (see
+      **Serving the frontend** below). Touches no application code.
     - `feed/` — **driven** side. Wraps `gofeed` behind the `FeedFetcher` port.
     - `storage/` — **driven** side. Implements `StatusRepository` on a local SQLite
       database via stdlib `database/sql` with the pure-Go `modernc.org/sqlite` driver
@@ -111,6 +121,24 @@ hand-written.
 - **Dependency direction:** adapters → application → domain. Never the reverse. Wiring
   happens only in `cmd/status-page/main.go`.
 - **HTTP server:** stdlib `net/http` only. No web framework (no gin/echo/chi).
+- **Serving the frontend.** One process serves both pillars on one origin, which is why
+  `frontend/src/api/client.ts` can use a bare `/api` base URL and no CORS exists anywhere.
+  `main.go` composes a root `ServeMux`: `"/api/"` gets the generated router, `"/"` gets
+  `webui`. `"/api/"` is the more specific pattern, so the SPA fallback can never swallow an
+  API request and an unknown `/api/...` path still 404s.
+  - The assets are compiled in with `//go:embed all:dist` from
+    `internal/adapters/webui/dist/`. **`go:embed` cannot reach outside the module** and Go
+    must not read `frontend/` (golden rule 6), so `infra/Dockerfile` copies `frontend/dist`
+    into that directory between the two build stages. A committed `dist/.gitkeep` (the
+    `all:` prefix is what makes embed accept a dotfile-only directory) keeps
+    `go build ./...` compiling on a clean checkout; everything else there is gitignored.
+  - A binary built outside Docker therefore has **no UI**, which is the normal dev case, not
+    an error: `webui.NewHandler` returns `ErrNotBuilt`, `main.go` logs one warning and serves
+    the API alone while Vite hosts the UI on :5173.
+  - Caching: `/assets/*` is content-hashed by Vite and served `immutable` for a year;
+    `index.html` and everything else is `no-cache`. A missing file *with* an extension 404s
+    rather than falling back, so a broken build shows up as a 404 instead of a confusing
+    MIME-type error in the browser.
 - **Storage:** a single SQLite database file under a configurable data directory
   (defaults to `./data/fire-lookout.db`, gitignored), opened in **WAL mode** with **foreign
   keys enforced** — both pinned in the DSN, which FK `ON DELETE` actions depend on:
@@ -138,19 +166,67 @@ hand-written.
     timelines are intentionally **not** parsed (yet).
   - **Timestamps:** every time column is TEXT, RFC3339, **UTC**, second-precision; normalize
     on write (`t.UTC().Format(time.RFC3339)`). `group_id` is a plain `int64` in Go (`0` =
-    ungrouped), never a nullable pointer.
-  - **Retention:** after each successful poll, prune `feed_item` older than a configurable
-    window (default ~7 days); `feed`/`feed_group` rows are never pruned.
-  - **Fetching:** the poller always re-fetches and re-parses — no HTTP conditional-GET
-    (ETag/Last-Modified) bookkeeping yet; add it if a provider rate-limits.
+    ungrouped), never a nullable pointer. **The one exception** is
+    `feed.http_last_modified`: it holds an HTTP-date exactly as the provider sent it
+    (`Mon, 24 Aug 2026 09:30:00 GMT`) because it is echoed back verbatim. Never normalise it.
+  - **Retention:** after each successful poll, prune `feed_item` older than
+    `domain.RetentionWindow` (7 days); `feed`/`feed_group` rows are never pruned.
+- **Cadence is in seconds, everywhere.** `refresh_interval_sec` is the unit on the wire, in
+  the `feed` column and in the due-check SQL, so nothing between the browser and the poller
+  converts anything. The Add dialog offers a fixed set — 30s / 1m / 5m / 10m / 30m, defaulting
+  to 5 minutes — and sends the chosen number of seconds; the API itself accepts **any positive
+  integer** (`domain.MinRefreshInterval` = 1s), and an omitted value — or an explicit `0`,
+  which is indistinguishable from omitted once it is a `time.Duration` — falls back to
+  `domain.DefaultRefreshInterval` (300s). The **scheduler tick is the practical floor**: a
+  cadence below `scheduler.DefaultTick` (15s) is effectively rounded up to it, since that is
+  how often due feeds are looked for. That is a deployment characteristic, not an input rule,
+  so it is deliberately not validated. Go uses `time.Duration` internally and converts at
+  exactly two edges — `httpapi` and `storage` — so a bare integer can never be mistaken for
+  nanoseconds inside the domain.
+- **Polling.** `adapters/scheduler` ticks (default 15s, `-poll-tick`) and asks
+  `application.PollService` for the feeds that are **due**: `enabled = 1` and
+  `last_fetched_at + refresh_interval_sec <= now`, plus anything never polled. `enabled` is a
+  pause switch, not soft deletion — a disabled feed is simply never due, and there is no
+  `deleted_at` anywhere. At most 4 feeds are fetched at once, and one feed's failure never
+  aborts the run.
+  - **Conditional GET.** `feed.http_etag` / `feed.http_last_modified` are stored after a
+    successful poll and sent back as `If-None-Match` / `If-Modified-Since`, so an unchanged
+    feed answers `304` with no body. Both are kept because providers differ: GitHub, Datadog
+    and npm send ETags; Azure and Cloudflare only send `Last-Modified`. A `304` counts as a
+    **successful** poll — we asked and learned nothing changed — so it advances
+    `last_success_at`. This is why the `feed/` adapter owns its own `http.Request` rather than
+    calling gofeed's `ParseURL`, which hides the response.
+  - **Outcomes.** `updated` stores entries and refreshes the validators; `not_modified` just
+    advances the clocks; **`rate_limited` (HTTP 429) is not a failure** — the attempt is
+    recorded so the feed waits a full interval, and `last_error` / `last_success_at` are left
+    untouched; `failed` records the reason and keeps the previous `last_success_at`. A failing
+    feed is retried on its normal cadence — no backoff, and no `Retry-After` handling yet.
+  - **Status derivation.** `domain.ParseStatus` reads the Atlassian Statuspage vocabulary
+    ("Resolved - …", "Monitoring - …", "Scheduled - …") from an entry's body, falling back to
+    its title. Statuspage concatenates updates newest-first, so the **first** marker is the
+    current state — an assumption, not a guarantee. Anything unrecognised stays `unknown`,
+    which the UI renders honestly as grey.
 - **Subscribing is validate-then-write.** `POST /feeds` sanitises the input (every string
   trimmed, empties rejected, http(s) URLs only), rejects a duplicate URL or name, and only
   then fetches the endpoint once through the `FeedFetcher` port to prove it really is a feed.
   Cheapest checks first: a duplicate never costs a network round trip, and nothing is written
   unless every check passes. The validation fetch is **not** a poll — it stores no incidents
   and leaves the health columns null, so a new system shows an unknown (grey) light until the
-  poller reads it. The `feed/` adapter therefore exists for validation only today; polling is
-  still a later slice.
+  poller reads it (which, with the scheduler running, is within a tick).
+- **The pause switch is honoured twice over.** `PATCH /feeds/{feedId}` flips `feed.enabled`
+  (no fetch happens — the URL has not changed, so pausing takes effect immediately). A paused
+  feed is then (a) never due, so nothing is polled, and (b) reported as `unknown` by
+  `NewSystemOverview` regardless of what is stored, because a colour we are no longer
+  refreshing would be a claim we cannot support. **Nothing is deleted**: re-enabling brings the
+  stored status straight back, and the UI collapses a paused card and refuses to expand it.
+- **Entries dated in the future are announcements, not history.** Statuspage dates a
+  scheduled-maintenance entry when the window will *open*, so a feed routinely carries entries
+  days ahead — Cloudflare typically has ~15. Both read queries therefore take an `AsOf` bound
+  (`ListLatestItems`, `domain.ItemQuery`) and ignore anything later: otherwise next week's
+  maintenance becomes the "latest" entry, paints a healthy system yellow, stamps the row with a
+  future date, and buries today's real incident under it. Rows stay in the database and appear
+  the moment their time arrives, so a maintenance window that has *started* still shows yellow.
+  The bound comes from `StatusService`'s injected clock.
 - **Read model / traffic-light.** `GET /overview` backs the main page: one row per feed, no
   parameters, and no incidents (a card lazily fetches its own from `GET /feeds/{feedId}/items`).
   The `Indicator` (green/yellow/red/grey) is derived in `domain` — never in the frontend — from
@@ -253,12 +329,17 @@ hand before committing.)
 
 ## 7. Versioning workflow
 
-- The whole tool has **one semver version**, stored in the root **`VERSION`** file
-  (currently `0.0.1`).
+- The whole tool has **one semver version**, stored in the root **`VERSION`** file.
 - It is the single source of truth:
   - **Backend** — injected at build time via `-ldflags "-X main.version=$(cat VERSION)"`.
-  - **Frontend** — injected at build time via a Vite `define` / env var.
-  - **Docker image** — tagged with it.
+    Surfaces in the startup log line and the feed fetcher's User-Agent.
+  - **Frontend** — read from `../VERSION` by `vite.config.ts` and injected as
+    `__APP_VERSION__`; `App.vue` renders it as `data-app-version`.
+  - **Contract** — mirrored into `api/openapi.yaml` `info.version`. It is not emitted into
+    either generated file (`embedded-spec: false`), so bumping it causes no codegen drift.
+  - **Docker image** — tagged with it. `infra/Dockerfile` reads `VERSION` out of the build
+    context rather than taking a `--build-arg`, so the baked-in version cannot drift from
+    the file.
 - **Bump `VERSION`** as part of any change that alters observable behavior, following
   semver (MAJOR breaking / MINOR feature / PATCH fix). CI verifies the value is a valid
   semver string.
@@ -289,7 +370,11 @@ Verified against the repo. Keep them accurate — agents rely on this section.
 - Build: `go build -ldflags "-X main.version=$(cat ../VERSION)" -o bin/status-page ./cmd/status-page`
 - Run (API on :8080, database at the repo-root `data/`): `go run ./cmd/status-page -db ../data/fire-lookout.db`
   - Flags: `-addr` (default `:8080`, env `RSS_READER_ADDR`), `-db` (default `./data/fire-lookout.db`,
-    env `RSS_READER_DB`).
+    env `RSS_READER_DB`), `-poll-tick` (default `15s`, env `RSS_READER_POLL_TICK`) — how often
+    the scheduler looks for due feeds, *not* a feed's cadence.
+  - The poller runs in-process alongside the API and stops with it.
+  - Logs `no frontend in this binary` and serves the API only — expected outside Docker.
+    Run `corepack yarn dev` alongside for the UI.
 - Test: `go test ./...`
 - Vet: `go vet ./...`
 - Lint: `golangci-lint run` (config: `backend/.golangci.yml`; requires golangci-lint ≥ v2;
@@ -316,10 +401,26 @@ Verified against the repo. Keep them accurate — agents rely on this section.
 - Build static: `corepack yarn build`
 - Storybook / Playwright: not set up yet (see §5).
 
-**Infra**
-- Not scaffolded yet: `infra/Dockerfile` and `docker-compose.yml` do not exist, and the backend
-  does not embed `frontend/dist` (a `go:embed` of a missing directory would not compile). Until
-  they land, run the two dev commands above side by side.
+**Infra** (repo root)
+- Run it: `docker compose up --build -d` → the whole tool on <http://localhost:8080>, API and
+  UI on one origin. `docker compose logs -f`, `docker compose down` (add `-v` to wipe the
+  database).
+  - Port already taken by a `go run` dev backend? `RSS_READER_PORT=8081 docker compose up -d`.
+- Build the image by hand: `docker build -t rss-reader:$(cat VERSION) -f infra/Dockerfile .`
+  - **The build context is the repo root, not `infra/`** — `frontend/vite.config.ts` reads
+    `../VERSION` and the backend stage needs both pillars.
+- Three stages: `node:22-alpine` builds the SPA (Node 22 still bundles Corepack; 25 dropped
+  it) → `golang:1.26-alpine` embeds it and builds a static binary (`CGO_ENABLED=0` works
+  because the SQLite driver is pure Go) → `gcr.io/distroless/static-debian12:nonroot`.
+  Result is ≈24 MB on disk / ≈6 MB compressed.
+- The database lives on the named volume `rss-reader-data` at `/data`. The container runs as
+  uid **65532**, and `/data` is created in the builder and copied in with that ownership —
+  Docker seeds a fresh named volume from the image's ownership at the mount point, so
+  skipping that step leaves a root-owned volume the process cannot write its WAL into.
+- Debugging: distroless has no shell, so `docker compose exec` will not work. Inspect the
+  volume from outside instead:
+  `docker run --rm -v rss-reader_rss-reader-data:/v alpine ls -lan /v`.
+- Not wired up yet: no `HEALTHCHECK`, and `.github/workflows/ci.yml` is still a `.gitkeep`.
 
 ---
 
@@ -328,5 +429,7 @@ Verified against the repo. Keep them accurate — agents rely on this section.
 - **Generated code** — `backend/internal/adapters/httpapi/*.gen.go` and
   `frontend/src/api/schema.gen.ts`. Change `api/openapi.yaml` and regenerate instead. (The rest
   of `frontend/src/api/` — `client.ts`, `status.ts` — *is* hand-written; see §5.)
-- **Build output** — `backend/bin/`, `frontend/dist/`, `frontend/storybook-static/`.
+- **Build output** — `backend/bin/`, `frontend/dist/`, `frontend/storybook-static/`, and
+  `backend/internal/adapters/webui/dist/` (the Docker build fills it; only `.gitkeep` is
+  committed, and it must stay — `go:embed` will not compile without it).
 - **Local runtime data** — `./data/` (gitignored SQLite database + `-wal`/`-shm` sidecar files).

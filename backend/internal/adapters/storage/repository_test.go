@@ -114,7 +114,7 @@ func TestForeignKeysAreEnforced(t *testing.T) {
 		t.Fatalf("delete feed: %v", err)
 	}
 
-	items, err := repo.ListLatestItems(context.Background())
+	items, err := repo.ListLatestItems(context.Background(), farFuture)
 	if err != nil {
 		t.Fatalf("ListLatestItems() error = %v", err)
 	}
@@ -221,7 +221,7 @@ func TestListLatestItemsReturnsNewestPerFeed(t *testing.T) {
 	insertItem(t, db, 20, 2, "only", "2026-08-01T00:00:00Z", "maintenance")
 	// feed 3 has no items at all.
 
-	items, err := repo.ListLatestItems(context.Background())
+	items, err := repo.ListLatestItems(context.Background(), farFuture)
 	if err != nil {
 		t.Fatalf("ListLatestItems() error = %v", err)
 	}
@@ -250,7 +250,7 @@ func TestListLatestItemsBreaksTimestampTiesByID(t *testing.T) {
 	insertItem(t, db, 10, 1, "first", "2026-08-17T00:00:00Z", "resolved")
 	insertItem(t, db, 11, 1, "second", "2026-08-17T00:00:00Z", "identified")
 
-	items, err := repo.ListLatestItems(context.Background())
+	items, err := repo.ListLatestItems(context.Background(), farFuture)
 	if err != nil {
 		t.Fatalf("ListLatestItems() error = %v", err)
 	}
@@ -269,7 +269,7 @@ func TestListItemsNewestFirstWithLimit(t *testing.T) {
 	insertItem(t, db, 11, 1, "newest", "2026-08-17T00:00:00Z", "investigating")
 	insertItem(t, db, 12, 1, "middle", "2026-08-12T00:00:00Z", "monitoring")
 
-	all, err := repo.ListItems(context.Background(), 1, nil, 50)
+	all, err := repo.ListItems(context.Background(), domain.ItemQuery{FeedID: 1, Since: nil, AsOf: farFuture, Limit: 50})
 	if err != nil {
 		t.Fatalf("ListItems() error = %v", err)
 	}
@@ -284,7 +284,7 @@ func TestListItemsNewestFirstWithLimit(t *testing.T) {
 		}
 	}
 
-	limited, err := repo.ListItems(context.Background(), 1, nil, 2)
+	limited, err := repo.ListItems(context.Background(), domain.ItemQuery{FeedID: 1, Since: nil, AsOf: farFuture, Limit: 2})
 	if err != nil {
 		t.Fatalf("ListItems() error = %v", err)
 	}
@@ -300,7 +300,7 @@ func TestListItemsSinceFilter(t *testing.T) {
 	insertItem(t, db, 11, 1, "recent", "2026-08-17T00:00:00Z", "monitoring")
 
 	since := mustTime(t, "2026-08-12T00:00:00Z")
-	items, err := repo.ListItems(context.Background(), 1, &since, 50)
+	items, err := repo.ListItems(context.Background(), domain.ItemQuery{FeedID: 1, Since: &since, AsOf: farFuture, Limit: 50})
 	if err != nil {
 		t.Fatalf("ListItems() error = %v", err)
 	}
@@ -316,7 +316,7 @@ func TestListItemsOtherFeedsAreExcluded(t *testing.T) {
 	insertItem(t, db, 10, 1, "mine", "2026-08-10T00:00:00Z", "resolved")
 	insertItem(t, db, 20, 2, "theirs", "2026-08-11T00:00:00Z", "resolved")
 
-	items, err := repo.ListItems(context.Background(), 1, nil, 50)
+	items, err := repo.ListItems(context.Background(), domain.ItemQuery{FeedID: 1, Since: nil, AsOf: farFuture, Limit: 50})
 	if err != nil {
 		t.Fatalf("ListItems() error = %v", err)
 	}
@@ -331,7 +331,7 @@ func TestListItemsMapsNullableColumns(t *testing.T) {
 	// No published_at, no status: both NULL in the row.
 	insertItem(t, db, 10, 1, "bare", "", "")
 
-	items, err := repo.ListItems(context.Background(), 1, nil, 50)
+	items, err := repo.ListItems(context.Background(), domain.ItemQuery{FeedID: 1, Since: nil, AsOf: farFuture, Limit: 50})
 	if err != nil {
 		t.Fatalf("ListItems() error = %v", err)
 	}
@@ -362,7 +362,7 @@ func TestListItemsUnparsableStatusFallsBackToUnknown(t *testing.T) {
 	insertFeed(t, db, 1, "GitHub", "https://a.test/feed", "", "", "")
 	insertItem(t, db, 10, 1, "weird", "2026-08-10T00:00:00Z", "postmortem-scheduled")
 
-	items, err := repo.ListItems(context.Background(), 1, nil, 50)
+	items, err := repo.ListItems(context.Background(), domain.ItemQuery{FeedID: 1, Since: nil, AsOf: farFuture, Limit: 50})
 	if err != nil {
 		t.Fatalf("ListItems() error = %v", err)
 	}
@@ -379,7 +379,7 @@ func TestListItemsFallsBackToFetchedAtForOrdering(t *testing.T) {
 	insertItem(t, db, 10, 1, "dated", "2026-08-10T00:00:00Z", "resolved")
 	insertItem(t, db, 11, 1, "undated", "", "resolved") // fetched_at 2026-08-18
 
-	items, err := repo.ListItems(context.Background(), 1, nil, 50)
+	items, err := repo.ListItems(context.Background(), domain.ItemQuery{FeedID: 1, Since: nil, AsOf: farFuture, Limit: 50})
 	if err != nil {
 		t.Fatalf("ListItems() error = %v", err)
 	}

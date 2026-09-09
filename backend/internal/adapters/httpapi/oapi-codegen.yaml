@@ -18,3 +18,4 @@ output-options:
     - getOverview
     - listFeedItems
     - subscribeFeed
+    - updateFeed

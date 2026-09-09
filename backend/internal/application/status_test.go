@@ -26,6 +26,8 @@ type fakeRepo struct {
 	gotSince  *time.Time
 	gotLimit  int
 	itemsCall int
+	gotAsOf   time.Time
+	gotQuery  domain.ItemQuery
 
 	// Write side, exercised by the subscribe use case.
 	urlExists      bool
@@ -36,6 +38,10 @@ type fakeRepo struct {
 	created        domain.Feed
 	createCalls    int
 	gotURLLookup   string
+	updated        domain.UpdateFeedInput
+	updateCalls    int
+	updateErr      error
+	updatedFeed    domain.Feed
 	gotTitleLookup string
 }
 
@@ -48,6 +54,17 @@ func (r *fakeRepo) FeedExistsByTitle(_ context.Context, title string) (bool, err
 	r.gotTitleLookup = title
 	return r.titleExists, r.titleExistsErr
 }
+
+// The poller's methods; the read-side tests do not exercise them (see poll_test.go).
+func (r *fakeRepo) DueFeeds(context.Context, time.Time) ([]domain.Feed, error) {
+	return nil, nil
+}
+
+func (r *fakeRepo) SaveItems(context.Context, int64, []domain.StatusItem) error { return nil }
+
+func (r *fakeRepo) RecordPoll(context.Context, domain.PollResult) error { return nil }
+
+func (r *fakeRepo) PruneItems(context.Context, int64, time.Time) (int64, error) { return 0, nil }
 
 func (r *fakeRepo) CreateFeed(_ context.Context, feed domain.Feed) (domain.Feed, error) {
 	r.createCalls++
@@ -62,11 +79,23 @@ func (r *fakeRepo) CreateFeed(_ context.Context, feed domain.Feed) (domain.Feed,
 	return stored, nil
 }
 
+func (r *fakeRepo) UpdateFeed(_ context.Context, id int64, in domain.UpdateFeedInput) (domain.Feed, error) {
+	r.updateCalls++
+	r.updated = in
+	if r.updateErr != nil {
+		return domain.Feed{}, r.updateErr
+	}
+	stored := r.updatedFeed
+	stored.ID = id
+	return stored, nil
+}
+
 func (r *fakeRepo) ListFeeds(context.Context) ([]domain.Feed, error) {
 	return r.feeds, r.feedsErr
 }
 
-func (r *fakeRepo) ListLatestItems(context.Context) ([]domain.StatusItem, error) {
+func (r *fakeRepo) ListLatestItems(_ context.Context, asOf time.Time) ([]domain.StatusItem, error) {
+	r.gotAsOf = asOf
 	return r.latest, r.latestErr
 }
 
@@ -82,8 +111,9 @@ func (r *fakeRepo) GetFeed(_ context.Context, id int64) (domain.Feed, error) {
 	return domain.Feed{}, fmt.Errorf("feed %d: %w", id, domain.ErrNotFound)
 }
 
-func (r *fakeRepo) ListItems(_ context.Context, feedID int64, since *time.Time, limit int) ([]domain.StatusItem, error) {
-	r.gotFeedID, r.gotSince, r.gotLimit = feedID, since, limit
+func (r *fakeRepo) ListItems(_ context.Context, q domain.ItemQuery) ([]domain.StatusItem, error) {
+	r.gotQuery = q
+	r.gotFeedID, r.gotSince, r.gotLimit = q.FeedID, q.Since, q.Limit
 	r.itemsCall++
 	return r.items, r.itemsErr
 }
@@ -98,19 +128,74 @@ func ts(s string) time.Time {
 
 func ptr[T any](v T) *T { return &v }
 
+// nowForReads is the clock the read-side tests pin, so "the future" is unambiguous.
+const nowForReads = "2026-08-24T12:00:00Z"
+
+// The overview must ask for entries as of now: anything dated later is an announcement of
+// work still to come, not the system's current state.
+func TestOverviewAsksForEntriesAsOfNow(t *testing.T) {
+	repo := &fakeRepo{feeds: []domain.Feed{{ID: 1, Title: "GitHub"}}}
+
+	if _, err := NewStatusService(repo, fixedNow(t, nowForReads)).Overview(context.Background()); err != nil {
+		t.Fatalf("Overview() error = %v", err)
+	}
+
+	if !repo.gotAsOf.Equal(ts(nowForReads)) {
+		t.Errorf("asked for entries as of %v, want %v", repo.gotAsOf, ts(nowForReads))
+	}
+}
+
+// A feed whose only entries are future-dated maintenance windows has said nothing about
+// now, so it falls through to the polled-successfully rule: operational, not degraded.
+// This is the Cloudflare case.
+func TestOverviewIgnoresFeedsWhoseOnlyEntriesAreStillToCome(t *testing.T) {
+	repo := &fakeRepo{
+		feeds: []domain.Feed{{ID: 1, Title: "Cloudflare", Enabled: true, LastSuccessAt: ptr(ts(nowForReads))}},
+		// The repository already applied the as-of filter, so nothing comes back.
+		latest: nil,
+	}
+
+	got, err := NewStatusService(repo, fixedNow(t, nowForReads)).Overview(context.Background())
+	if err != nil {
+		t.Fatalf("Overview() error = %v", err)
+	}
+
+	if got[0].Indicator != domain.IndicatorOperational {
+		t.Errorf("indicator = %q, want operational", got[0].Indicator)
+	}
+	if got[0].LastUpdatedAt != nil {
+		t.Errorf("last updated = %v, want nil rather than a date in the future", got[0].LastUpdatedAt)
+	}
+}
+
+func TestFeedItemsAsksForEntriesAsOfNow(t *testing.T) {
+	repo := &fakeRepo{feeds: []domain.Feed{{ID: 1, Title: "GitHub"}}}
+
+	if _, err := NewStatusService(repo, fixedNow(t, nowForReads)).FeedItems(context.Background(), 1, nil, 10); err != nil {
+		t.Fatalf("FeedItems() error = %v", err)
+	}
+
+	if !repo.gotQuery.AsOf.Equal(ts(nowForReads)) {
+		t.Errorf("query AsOf = %v, want %v", repo.gotQuery.AsOf, ts(nowForReads))
+	}
+	if repo.gotQuery.FeedID != 1 || repo.gotQuery.Limit != 10 {
+		t.Errorf("query = %+v, want the feed and limit carried through", repo.gotQuery)
+	}
+}
+
 func TestOverviewAssemblesOneRowPerFeed(t *testing.T) {
 	repo := &fakeRepo{
 		feeds: []domain.Feed{
-			{ID: 1, Title: "GitHub", LastSuccessAt: ptr(ts("2026-08-18T09:00:00Z"))},
-			{ID: 2, Title: "Datadog", LastSuccessAt: ptr(ts("2026-08-18T09:00:00Z"))},
-			{ID: 3, Title: "Never polled"},
+			{ID: 1, Title: "GitHub", Enabled: true, LastSuccessAt: ptr(ts("2026-08-18T09:00:00Z"))},
+			{ID: 2, Title: "Datadog", Enabled: true, LastSuccessAt: ptr(ts("2026-08-18T09:00:00Z"))},
+			{ID: 3, Title: "Never polled", Enabled: true},
 		},
 		latest: []domain.StatusItem{
 			{ID: 10, FeedID: 1, Status: domain.StatusInvestigating, PublishedAt: ts("2026-08-18T08:00:00Z")},
 		},
 	}
 
-	got, err := NewStatusService(repo).Overview(context.Background())
+	got, err := NewStatusService(repo, fixedNow(t, nowForReads)).Overview(context.Background())
 	if err != nil {
 		t.Fatalf("Overview() error = %v", err)
 	}
@@ -147,7 +232,7 @@ func TestOverviewOrdersByTitleCaseInsensitivelyThenID(t *testing.T) {
 		{ID: 2, Title: "aws"}, // same title: lower id wins
 	}}
 
-	got, err := NewStatusService(repo).Overview(context.Background())
+	got, err := NewStatusService(repo, fixedNow(t, nowForReads)).Overview(context.Background())
 	if err != nil {
 		t.Fatalf("Overview() error = %v", err)
 	}
@@ -165,7 +250,7 @@ func TestOverviewOrdersByTitleCaseInsensitivelyThenID(t *testing.T) {
 }
 
 func TestOverviewWithNoFeedsIsEmpty(t *testing.T) {
-	got, err := NewStatusService(&fakeRepo{}).Overview(context.Background())
+	got, err := NewStatusService(&fakeRepo{}, fixedNow(t, nowForReads)).Overview(context.Background())
 	if err != nil {
 		t.Fatalf("Overview() error = %v", err)
 	}
@@ -187,7 +272,7 @@ func TestOverviewPropagatesRepositoryErrors(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := NewStatusService(tt.repo).Overview(context.Background())
+			_, err := NewStatusService(tt.repo, fixedNow(t, nowForReads)).Overview(context.Background())
 			if !errors.Is(err, boom) {
 				t.Errorf("error = %v, want it to wrap %v", err, boom)
 			}
@@ -212,7 +297,7 @@ func TestFeedItemsClampsLimit(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			repo := &fakeRepo{feeds: []domain.Feed{{ID: 1, Title: "GitHub"}}}
 
-			if _, err := NewStatusService(repo).FeedItems(context.Background(), 1, nil, tt.ask); err != nil {
+			if _, err := NewStatusService(repo, fixedNow(t, nowForReads)).FeedItems(context.Background(), 1, nil, tt.ask); err != nil {
 				t.Fatalf("FeedItems() error = %v", err)
 			}
 			if repo.gotLimit != tt.want {
@@ -226,7 +311,7 @@ func TestFeedItemsPassesSinceThrough(t *testing.T) {
 	repo := &fakeRepo{feeds: []domain.Feed{{ID: 1, Title: "GitHub"}}}
 	since := ts("2026-08-11T00:00:00Z")
 
-	if _, err := NewStatusService(repo).FeedItems(context.Background(), 1, &since, 5); err != nil {
+	if _, err := NewStatusService(repo, fixedNow(t, nowForReads)).FeedItems(context.Background(), 1, &since, 5); err != nil {
 		t.Fatalf("FeedItems() error = %v", err)
 	}
 
@@ -241,7 +326,7 @@ func TestFeedItemsPassesSinceThrough(t *testing.T) {
 func TestFeedItemsUnknownFeedIsNotFound(t *testing.T) {
 	repo := &fakeRepo{feeds: []domain.Feed{{ID: 1, Title: "GitHub"}}}
 
-	_, err := NewStatusService(repo).FeedItems(context.Background(), 99, nil, 0)
+	_, err := NewStatusService(repo, fixedNow(t, nowForReads)).FeedItems(context.Background(), 99, nil, 0)
 
 	if !errors.Is(err, domain.ErrNotFound) {
 		t.Fatalf("error = %v, want it to wrap ErrNotFound", err)
@@ -258,7 +343,7 @@ func TestFeedItemsReturnsWhatTheRepositoryHas(t *testing.T) {
 	}
 	repo := &fakeRepo{feeds: []domain.Feed{{ID: 1, Title: "GitHub"}}, items: items}
 
-	got, err := NewStatusService(repo).FeedItems(context.Background(), 1, nil, 0)
+	got, err := NewStatusService(repo, fixedNow(t, nowForReads)).FeedItems(context.Background(), 1, nil, 0)
 	if err != nil {
 		t.Fatalf("FeedItems() error = %v", err)
 	}

@@ -279,7 +279,7 @@ export interface components {
              * @description 0 == Ungrouped, which is also what an omitted value falls back to. Must reference an existing group.
              */
             group_id?: number;
-            /** @description Poll cadence in seconds; omitted means 300. */
+            /** @description Poll cadence in seconds. Any positive value is accepted; omitted means 300. Note that the scheduler only looks for due feeds every few seconds, so a cadence below that tick is effectively rounded up to it. */
             refresh_interval_sec?: number;
             /** @description Whether the feed is polled; omitted means true. */
             enabled?: boolean;

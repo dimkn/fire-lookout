@@ -18,9 +18,9 @@ type fakeFetcher struct {
 	gotURL string
 }
 
-func (f *fakeFetcher) Fetch(_ context.Context, url string) (domain.FetchedFeed, error) {
+func (f *fakeFetcher) Fetch(_ context.Context, req domain.FetchRequest) (domain.FetchedFeed, error) {
 	f.calls++
-	f.gotURL = url
+	f.gotURL = req.URL
 	if f.err != nil {
 		return domain.FetchedFeed{}, f.err
 	}

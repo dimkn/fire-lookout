@@ -2,6 +2,7 @@ import { mount } from '@vue/test-utils'
 import { describe, expect, it } from 'vitest'
 
 import type { StatusItem, SystemOverview } from '@/api/status'
+import AppIconButton from '@/components/AppIconButton/AppIconButton.vue'
 import IncidentItem from '@/components/IncidentItem/IncidentItem.vue'
 import StatusIndicator from '@/components/StatusIndicator/StatusIndicator.vue'
 
@@ -158,6 +159,122 @@ describe('SystemCard', () => {
     expect(wrapper.get('.system-card__detail').text()).toContain('Never')
   })
 
+  describe('row actions', () => {
+    it('offers edit, delete and an on/off toggle', () => {
+      const wrapper = mount(SystemCard, { props: { system: makeSystem() } })
+
+      const labels = wrapper.findAllComponents(AppIconButton).map((b) => b.props('label') as string)
+      expect(labels).toEqual(['Edit integration', 'Delete integration', 'Turn polling off'])
+    })
+
+    it('draws them as icons, with no visible text', () => {
+      const wrapper = mount(SystemCard, { props: { system: makeSystem() } })
+
+      const actions = wrapper.get('.system-card__actions')
+      expect(actions.findAll('svg')).toHaveLength(3)
+      expect(actions.text()).toBe('')
+    })
+
+    // The chevron is gone: the actions occupy that end of the row now.
+    it('no longer shows a chevron', () => {
+      const wrapper = mount(SystemCard, { props: { system: makeSystem() } })
+
+      expect(wrapper.find('.system-card__chevron').exists()).toBe(false)
+      expect(wrapper.text()).not.toContain('▸')
+      expect(wrapper.text()).not.toContain('▾')
+    })
+
+    // The whole point of taking the buttons out of the row button: pressing Delete must not
+    // also open the card.
+    it('does not expand the card when an action is pressed', async () => {
+      const wrapper = mount(SystemCard, { props: { system: makeSystem() } })
+
+      for (const button of wrapper.findAllComponents(AppIconButton)) {
+        await button.trigger('click')
+      }
+
+      expect(wrapper.find('.system-card__detail').exists()).toBe(false)
+      expect(wrapper.get('.system-card__row').attributes('aria-expanded')).toBe('false')
+      expect(wrapper.emitted('expand')).toBeUndefined()
+    })
+
+    it('asks the page to pause a running system', async () => {
+      const wrapper = mount(SystemCard, { props: { system: makeSystem() } })
+
+      await wrapper.findAllComponents(AppIconButton)[2].trigger('click')
+
+      expect(wrapper.emitted('setEnabled')).toEqual([[{ feedId: 1, enabled: false }]])
+    })
+
+    it('asks the page to resume a paused system', async () => {
+      const system = makeSystem()
+      system.feed.enabled = false
+      const wrapper = mount(SystemCard, { props: { system } })
+
+      await wrapper.findAllComponents(AppIconButton)[2].trigger('click')
+
+      expect(wrapper.emitted('setEnabled')).toEqual([[{ feedId: 1, enabled: true }]])
+    })
+
+    // While the request is in flight the switch is unavailable, so a double-click cannot
+    // send a second, contradictory request.
+    it('disables the switch while the page is busy with this feed', async () => {
+      const wrapper = mount(SystemCard, { props: { system: makeSystem(), busy: true } })
+
+      const toggle = wrapper.findAllComponents(AppIconButton)[2]
+      expect(toggle.props('disabled')).toBe(true)
+
+      await toggle.trigger('click')
+      expect(wrapper.emitted('setEnabled')).toBeUndefined()
+    })
+
+    it('shows the toggle as on for a polling system', () => {
+      const wrapper = mount(SystemCard, { props: { system: makeSystem() } })
+
+      const toggle = wrapper.findAllComponents(AppIconButton)[2]
+      expect(toggle.props('pressed')).toBe(true)
+      expect(toggle.props('label')).toBe('Turn polling off')
+    })
+
+    // Paused is a property of the system, not of one button, so the whole row reads as off.
+    it('dims the entire row when the system is paused', () => {
+      const system = makeSystem()
+      system.feed.enabled = false
+      const wrapper = mount(SystemCard, { props: { system } })
+
+      expect(wrapper.get('.system-card__header').classes()).toContain('system-card__header--paused')
+    })
+
+    it('leaves the row undimmed while the system is polling', () => {
+      const wrapper = mount(SystemCard, { props: { system: makeSystem() } })
+
+      expect(wrapper.get('.system-card__header').classes()).not.toContain(
+        'system-card__header--paused',
+      )
+    })
+
+    // The row dim covers the actions too, so the toggle must not dim itself as well.
+    it('leaves the paused look to the row rather than the toggle button', () => {
+      const system = makeSystem()
+      system.feed.enabled = false
+      const wrapper = mount(SystemCard, { props: { system } })
+
+      const toggle = wrapper.findAllComponents(AppIconButton)[2]
+      expect(toggle.props('pressed')).toBe(false)
+      expect(toggle.classes()).not.toContain('app-icon-button--off')
+    })
+
+    it('shows the toggle as off for a paused system', () => {
+      const system = makeSystem()
+      system.feed.enabled = false
+      const wrapper = mount(SystemCard, { props: { system } })
+
+      const toggle = wrapper.findAllComponents(AppIconButton)[2]
+      expect(toggle.props('pressed')).toBe(false)
+      expect(toggle.props('label')).toBe('Turn polling on')
+    })
+  })
+
   it('shows when the system last changed on the collapsed row', () => {
     const wrapper = mount(SystemCard, { props: { system: makeSystem() } })
 
@@ -170,5 +287,50 @@ describe('SystemCard', () => {
     const wrapper = mount(SystemCard, { props: { system: makeSystem({ last_updated_at: null }) } })
 
     expect(wrapper.find('.system-card__updated').exists()).toBe(false)
+  })
+})
+
+describe('SystemCard while paused', () => {
+  function pausedSystem() {
+    const system = makeSystem()
+    system.feed.enabled = false
+    return system
+  }
+
+  it('cannot be expanded', async () => {
+    const wrapper = mount(SystemCard, { props: { system: pausedSystem() } })
+
+    await wrapper.get('.system-card__row').trigger('click')
+
+    expect(wrapper.find('.system-card__detail').exists()).toBe(false)
+    expect(wrapper.emitted('expand')).toBeUndefined()
+  })
+
+  it('marks the row as unavailable rather than silently ignoring clicks', () => {
+    const wrapper = mount(SystemCard, { props: { system: pausedSystem() } })
+
+    expect(wrapper.get('.system-card__row').attributes('disabled')).toBeDefined()
+  })
+
+  // Pausing an open card closes it: its detail describes a state we have stopped tracking.
+  it('collapses when it is paused while open', async () => {
+    const wrapper = mount(SystemCard, { props: { system: makeSystem() } })
+    await wrapper.get('.system-card__row').trigger('click')
+    expect(wrapper.find('.system-card__detail').exists()).toBe(true)
+
+    await wrapper.setProps({ system: pausedSystem() })
+
+    expect(wrapper.find('.system-card__detail').exists()).toBe(false)
+  })
+
+  it('can be opened again once it is resumed', async () => {
+    const wrapper = mount(SystemCard, { props: { system: pausedSystem() } })
+    await wrapper.get('.system-card__row').trigger('click')
+    expect(wrapper.find('.system-card__detail').exists()).toBe(false)
+
+    await wrapper.setProps({ system: makeSystem() })
+    await wrapper.get('.system-card__row').trigger('click')
+
+    expect(wrapper.find('.system-card__detail').exists()).toBe(true)
   })
 })

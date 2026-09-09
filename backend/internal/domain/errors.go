@@ -20,6 +20,11 @@ var (
 
 	// ErrFeedUnreachable reports a feed endpoint that could not be read or parsed.
 	ErrFeedUnreachable = errors.New("feed unreachable")
+
+	// ErrRateLimited reports that the provider asked us to slow down (HTTP 429). It
+	// deliberately does not wrap ErrFeedUnreachable: being throttled says nothing about
+	// whether the feed is valid, and the poller treats it as a skip rather than a failure.
+	ErrRateLimited = errors.New("rate limited")
 )
 
 // Specific conflicts. Each wraps ErrConflict, so callers can match either the precise

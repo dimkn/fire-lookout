@@ -25,6 +25,7 @@ type StatusProvider interface {
 // FeedSubscriber is the write side this adapter needs.
 type FeedSubscriber interface {
 	SubscribeFeed(ctx context.Context, in domain.SubscribeInput) (domain.Feed, error)
+	UpdateFeed(ctx context.Context, id int64, in domain.UpdateFeedInput) (domain.Feed, error)
 }
 
 // Server implements the generated ServerInterface.
@@ -116,6 +117,33 @@ func (s *Server) SubscribeFeed(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, toFeed(feed))
 }
 
+// UpdateFeed applies a partial update: the pause switch, the name, the cadence, the group.
+// Omitted fields are left alone, which is what makes the on/off toggle a one-field request.
+func (s *Server) UpdateFeed(w http.ResponseWriter, r *http.Request, feedID FeedId) {
+	var body UpdateFeedJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "The request body is not valid JSON.")
+		return
+	}
+
+	in := domain.UpdateFeedInput{
+		Title:   body.Title,
+		GroupID: body.GroupId,
+		Enabled: body.Enabled,
+	}
+	if body.RefreshIntervalSec != nil {
+		interval := time.Duration(*body.RefreshIntervalSec) * time.Second
+		in.RefreshInterval = &interval
+	}
+
+	feed, err := s.subscriber.UpdateFeed(r.Context(), feedID, in)
+	if err != nil {
+		failSubscribe(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toFeed(feed))
+}
+
 // failSubscribe maps the subscribe use case's errors onto the responses the contract
 // publishes for POST /feeds. Every message here is written to be shown to a user: the
 // frontend puts it straight into a banner.
@@ -124,6 +152,8 @@ func failSubscribe(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.As(err, &invalid):
 		writeError(w, http.StatusBadRequest, "invalid_input", invalid.Message)
+	case errors.Is(err, domain.ErrNotFound):
+		writeError(w, http.StatusNotFound, "not_found", "That integration no longer exists.")
 	case errors.Is(err, domain.ErrDuplicateURL):
 		writeError(w, http.StatusConflict, "feed_exists",
 			"That RSS link is already on the dashboard.")

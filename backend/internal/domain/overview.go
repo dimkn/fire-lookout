@@ -17,8 +17,10 @@ type SystemOverview struct {
 }
 
 // NewSystemOverview assembles the row for one feed from its newest incident, which is
-// nil when the feed has none. The traffic-light follows three rules, in order:
+// nil when the feed has none. The traffic-light follows four rules, in order:
 //
+//  0. polling is paused (Feed.Enabled false) → unknown, whatever is stored: we are not
+//     watching, so any colour we kept would be a claim about a system we stopped checking;
 //  1. there is an incident      → its status decides the colour;
 //  2. no incident, but the feed has been polled successfully → operational, because we
 //     looked and nothing was wrong;
@@ -30,6 +32,17 @@ type SystemOverview struct {
 // instead of masquerading as an incident.
 func NewSystemOverview(f Feed, latest *StatusItem) SystemOverview {
 	o := SystemOverview{Feed: f}
+
+	// Rule 0. Nothing stored is thrown away — re-enabling brings both the real status and
+	// the timestamp straight back — but while paused we report only that we do not know.
+	// LastUpdatedAt stays nil for the same reason as the light: reporting when the system
+	// last changed, next to a grey "we don't know", invites reading the pair as current.
+	if !f.Enabled {
+		unknown := StatusUnknown
+		o.Indicator = IndicatorUnknown
+		o.CurrentStatus = &unknown
+		return o
+	}
 
 	if latest == nil {
 		if f.LastSuccessAt != nil {

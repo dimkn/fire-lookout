@@ -52,11 +52,22 @@ type fakeSubscriber struct {
 
 	calls int
 	got   domain.SubscribeInput
+
+	updateCalls int
+	gotID       int64
+	gotUpdate   domain.UpdateFeedInput
 }
 
 func (f *fakeSubscriber) SubscribeFeed(_ context.Context, in domain.SubscribeInput) (domain.Feed, error) {
 	f.calls++
 	f.got = in
+	return f.feed, f.err
+}
+
+func (f *fakeSubscriber) UpdateFeed(_ context.Context, id int64, in domain.UpdateFeedInput) (domain.Feed, error) {
+	f.updateCalls++
+	f.gotID = id
+	f.gotUpdate = in
 	return f.feed, f.err
 }
 
@@ -470,6 +481,126 @@ func TestSubscribeFeedRejectsMalformedJSON(t *testing.T) {
 	}
 	if subscriber.calls != 0 {
 		t.Errorf("use case called %d times, want 0", subscriber.calls)
+	}
+}
+
+func TestUpdateFeedTogglesTheSwitch(t *testing.T) {
+	subscriber := &fakeSubscriber{feed: domain.Feed{
+		ID: 7, URL: "https://a.test/feed.atom", Title: "GitHub", Enabled: false,
+		RefreshInterval: 5 * time.Minute,
+		CreatedAt:       ts(t, "2026-08-24T12:00:00Z"), UpdatedAt: ts(t, "2026-08-26T12:00:00Z"),
+	}}
+
+	rec := send(t, &fakeStatus{}, subscriber, http.MethodPatch, "/api/feeds/7", `{"enabled":false}`)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %s)", rec.Code, rec.Body.String())
+	}
+	if subscriber.gotID != 7 {
+		t.Errorf("feed id = %d, want 7", subscriber.gotID)
+	}
+	if subscriber.gotUpdate.Enabled == nil || *subscriber.gotUpdate.Enabled {
+		t.Errorf("update = %+v, want enabled=false", subscriber.gotUpdate)
+	}
+
+	var got Feed
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal body %s: %v", rec.Body.String(), err)
+	}
+	if got.Enabled {
+		t.Error("returned feed is enabled, want the paused one")
+	}
+}
+
+// Omitted fields must arrive as nil so the use case leaves them alone.
+func TestUpdateFeedLeavesOmittedFieldsNil(t *testing.T) {
+	subscriber := &fakeSubscriber{}
+
+	send(t, &fakeStatus{}, subscriber, http.MethodPatch, "/api/feeds/7", `{"enabled":true}`)
+
+	u := subscriber.gotUpdate
+	if u.Title != nil || u.GroupID != nil || u.RefreshInterval != nil {
+		t.Errorf("update = %+v, want only enabled set", u)
+	}
+}
+
+func TestUpdateFeedCarriesEveryFieldItIsGiven(t *testing.T) {
+	subscriber := &fakeSubscriber{}
+
+	send(t, &fakeStatus{}, subscriber, http.MethodPatch, "/api/feeds/7",
+		`{"title":"New name","group_id":3,"refresh_interval_sec":30,"enabled":true}`)
+
+	u := subscriber.gotUpdate
+	if u.Title == nil || *u.Title != "New name" {
+		t.Errorf("Title = %v", u.Title)
+	}
+	if u.GroupID == nil || *u.GroupID != 3 {
+		t.Errorf("GroupID = %v", u.GroupID)
+	}
+	if u.RefreshInterval == nil || *u.RefreshInterval != 30*time.Second {
+		t.Errorf("RefreshInterval = %v, want 30s", u.RefreshInterval)
+	}
+	if u.Enabled == nil || !*u.Enabled {
+		t.Errorf("Enabled = %v", u.Enabled)
+	}
+}
+
+func TestUpdateFeedErrorMapping(t *testing.T) {
+	tests := []struct {
+		name       string
+		err        error
+		wantStatus int
+		wantCode   string
+	}{
+		{
+			name:       "unknown feed",
+			err:        fmt.Errorf("update: %w", domain.ErrNotFound),
+			wantStatus: http.StatusNotFound,
+			wantCode:   "not_found",
+		},
+		{
+			name:       "name taken",
+			err:        fmt.Errorf("update: %w", domain.ErrDuplicateTitle),
+			wantStatus: http.StatusConflict,
+			wantCode:   "name_exists",
+		},
+		{
+			name:       "rejected field",
+			err:        domain.ValidationError{Field: "title", Message: "Name must not be empty."},
+			wantStatus: http.StatusBadRequest,
+			wantCode:   "invalid_input",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := send(t, &fakeStatus{}, &fakeSubscriber{err: tt.err},
+				http.MethodPatch, "/api/feeds/7", `{"enabled":false}`)
+
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d (body %s)", rec.Code, tt.wantStatus, rec.Body.String())
+			}
+			var body Error
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatalf("unmarshal body %s: %v", rec.Body.String(), err)
+			}
+			if body.Code != tt.wantCode {
+				t.Errorf("code = %q, want %q", body.Code, tt.wantCode)
+			}
+		})
+	}
+}
+
+func TestUpdateFeedRejectsMalformedJSON(t *testing.T) {
+	subscriber := &fakeSubscriber{}
+
+	rec := send(t, &fakeStatus{}, subscriber, http.MethodPatch, "/api/feeds/7", `{"enabled":`)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	if subscriber.updateCalls != 0 {
+		t.Errorf("use case called %d times, want 0", subscriber.updateCalls)
 	}
 }
 

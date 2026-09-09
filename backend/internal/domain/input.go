@@ -7,8 +7,13 @@ import (
 )
 
 // MinRefreshInterval is the fastest poll cadence a feed may be given, mirroring the bound
-// published in api/openapi.yaml.
-const MinRefreshInterval = 30 * time.Second
+// published in api/openapi.yaml: any positive number of seconds is valid.
+//
+// The scheduler's tick is the practical floor — it only looks for due feeds every
+// scheduler.DefaultTick — so a cadence below that is effectively rounded up to it. That is a
+// deployment characteristic rather than a rule about the input, which is why it is not
+// enforced here.
+const MinRefreshInterval = 1 * time.Second
 
 // SubscribeInput is what a user provides to subscribe to a new feed. Only URL is
 // required; empty/zero fields fall back to defaults or the feed's own metadata. The
@@ -48,7 +53,7 @@ func (in SubscribeInput) Sanitize() (SubscribeInput, error) {
 	case out.RefreshInterval < MinRefreshInterval:
 		return SubscribeInput{}, ValidationError{
 			Field:   "refresh_interval_sec",
-			Message: "Refresh interval must be at least 30 seconds.",
+			Message: "Refresh interval must be a positive number of seconds.",
 		}
 	}
 
@@ -87,6 +92,35 @@ type UpdateFeedInput struct {
 	GroupID         *int64
 	RefreshInterval *time.Duration
 	Enabled         *bool
+}
+
+// IsEmpty reports an update that would change nothing.
+func (in UpdateFeedInput) IsEmpty() bool {
+	return in.Title == nil && in.GroupID == nil && in.RefreshInterval == nil && in.Enabled == nil
+}
+
+// Sanitize trims and checks the fields that were actually supplied, leaving the rest alone.
+// The rules match Sanitize on SubscribeInput, so a value that could be created can also be
+// updated to.
+func (in UpdateFeedInput) Sanitize() (UpdateFeedInput, error) {
+	out := in
+
+	if out.Title != nil {
+		trimmed := strings.TrimSpace(*out.Title)
+		if trimmed == "" {
+			return UpdateFeedInput{}, ValidationError{Field: "title", Message: "Name must not be empty."}
+		}
+		out.Title = &trimmed
+	}
+
+	if out.RefreshInterval != nil && *out.RefreshInterval < MinRefreshInterval {
+		return UpdateFeedInput{}, ValidationError{
+			Field:   "refresh_interval_sec",
+			Message: "Refresh interval must be a positive number of seconds.",
+		}
+	}
+
+	return out, nil
 }
 
 // CreateGroupInput is the data needed to create a new group.
