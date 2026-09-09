@@ -186,6 +186,12 @@ hand-written.
   unless every check passes. The validation fetch is **not** a poll — it stores no incidents
   and leaves the health columns null, so a new system shows an unknown (grey) light until the
   poller reads it (which, with the scheduler running, is within a tick).
+- **The pause switch is honoured twice over.** `PATCH /feeds/{feedId}` flips `feed.enabled`
+  (no fetch happens — the URL has not changed, so pausing takes effect immediately). A paused
+  feed is then (a) never due, so nothing is polled, and (b) reported as `unknown` by
+  `NewSystemOverview` regardless of what is stored, because a colour we are no longer
+  refreshing would be a claim we cannot support. **Nothing is deleted**: re-enabling brings the
+  stored status straight back, and the UI collapses a paused card and refuses to expand it.
 - **Entries dated in the future are announcements, not history.** Statuspage dates a
   scheduled-maintenance entry when the window will *open*, so a feed routinely carries entries
   days ahead — Cloudflare typically has ~15. Both read queries therefore take an `AsOf` bound

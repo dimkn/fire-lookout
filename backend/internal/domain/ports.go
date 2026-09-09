@@ -39,6 +39,10 @@ type StatusRepository interface {
 	// with an existing one.
 	CreateFeed(ctx context.Context, feed Feed) (Feed, error)
 
+	// UpdateFeed applies a partial update and returns the stored feed. It returns a wrapped
+	// ErrNotFound for an unknown id, or ErrDuplicateTitle when the new name is taken.
+	UpdateFeed(ctx context.Context, id int64, in UpdateFeedInput) (Feed, error)
+
 	// DueFeeds returns the enabled feeds whose cadence has elapsed by now, plus any that
 	// have never been polled. Disabled feeds are never due.
 	DueFeeds(ctx context.Context, now time.Time) ([]Feed, error)

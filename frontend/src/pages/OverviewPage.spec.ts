@@ -2,7 +2,13 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { Feed, StatusItem, SystemOverview } from '@/api/status'
-import { fetchFeedItems, fetchOverview, RequestError, subscribeFeed } from '@/api/status'
+import {
+  fetchFeedItems,
+  fetchOverview,
+  RequestError,
+  subscribeFeed,
+  updateFeed,
+} from '@/api/status'
 import AddIntegrationDialog from '@/components/AddIntegrationDialog/AddIntegrationDialog.vue'
 import AppButton from '@/components/AppButton/AppButton.vue'
 import SystemCard from '@/components/SystemCard/SystemCard.vue'
@@ -21,12 +27,14 @@ vi.mock('@/api/status', async (importOriginal) => {
     fetchOverview: vi.fn(),
     fetchFeedItems: vi.fn(),
     subscribeFeed: vi.fn(),
+    updateFeed: vi.fn(),
   }
 })
 
 const fetchOverviewMock = vi.mocked(fetchOverview)
 const fetchFeedItemsMock = vi.mocked(fetchFeedItems)
 const subscribeFeedMock = vi.mocked(subscribeFeed)
+const updateFeedMock = vi.mocked(updateFeed)
 
 function makeFeed(id: number, title: string): Feed {
   return {
@@ -87,9 +95,11 @@ describe('OverviewPage', () => {
     fetchOverviewMock.mockReset()
     fetchFeedItemsMock.mockReset()
     subscribeFeedMock.mockReset()
+    updateFeedMock.mockReset()
     fetchOverviewMock.mockResolvedValue([])
     fetchFeedItemsMock.mockResolvedValue([])
     subscribeFeedMock.mockResolvedValue(makeFeed(99, 'Something'))
+    updateFeedMock.mockResolvedValue(makeFeed(1, 'Something'))
     clearBanners()
   })
 
@@ -686,6 +696,138 @@ describe('OverviewPage', () => {
       expect(wrapper.getComponent(PageToolbar).props('refreshing')).toBe(false)
 
       release([])
+      await flushPromises()
+    })
+  })
+
+  describe('the on/off switch', () => {
+    async function pageWith(...systems: SystemOverview[]) {
+      fetchOverviewMock.mockResolvedValue(systems)
+      const wrapper = mount(OverviewPage)
+      await flushPromises()
+      return wrapper
+    }
+
+    function pressSwitch(wrapper: Awaited<ReturnType<typeof pageWith>>, index = 0) {
+      const card = wrapper.findAllComponents(SystemCard)[index]
+      return card.findAll('.system-card__actions button')[2].trigger('click')
+    }
+
+    it('asks the API to pause a running system', async () => {
+      const wrapper = await pageWith(makeSystem(1, 'GitHub'))
+
+      await pressSwitch(wrapper)
+      await flushPromises()
+
+      expect(updateFeedMock).toHaveBeenCalledWith(1, { enabled: false })
+    })
+
+    it('asks the API to resume a paused system', async () => {
+      const paused = makeSystem(1, 'GitHub')
+      paused.feed.enabled = false
+      const wrapper = await pageWith(paused)
+
+      await pressSwitch(wrapper)
+      await flushPromises()
+
+      expect(updateFeedMock).toHaveBeenCalledWith(1, { enabled: true })
+    })
+
+    // The new colour is the backend's decision — a paused system reports unknown — so the
+    // list is re-read rather than patched up locally.
+    it('re-reads the overview so the row shows its new state', async () => {
+      const wrapper = await pageWith(makeSystem(1, 'GitHub'))
+      expect(fetchOverviewMock).toHaveBeenCalledTimes(1)
+
+      const pausedRow = makeSystem(1, 'GitHub')
+      pausedRow.feed.enabled = false
+      pausedRow.indicator = 'unknown'
+      fetchOverviewMock.mockResolvedValueOnce([pausedRow])
+
+      await pressSwitch(wrapper)
+      await flushPromises()
+
+      expect(fetchOverviewMock).toHaveBeenCalledTimes(2)
+      expect(wrapper.getComponent(SystemCard).props('system').indicator).toBe('unknown')
+    })
+
+    // Nothing to announce on success: the row itself changes colour.
+    it('says nothing when it works', async () => {
+      const wrapper = await pageWith(makeSystem(1, 'GitHub'))
+
+      await pressSwitch(wrapper)
+      await flushPromises()
+
+      expect(currentBanner.value).toBeNull()
+    })
+
+    it('announces the server’s message when it fails', async () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {})
+      const wrapper = await pageWith(makeSystem(1, 'GitHub'))
+      updateFeedMock.mockRejectedValueOnce(
+        new RequestError(404, 'not_found', 'That integration no longer exists.', 'failed'),
+      )
+
+      await pressSwitch(wrapper)
+      await flushPromises()
+
+      expect(currentBanner.value).toMatchObject({
+        kind: 'error',
+        message: 'That integration no longer exists.',
+      })
+      // A failed switch must not disturb what is on screen.
+      expect(fetchOverviewMock).toHaveBeenCalledTimes(1)
+    })
+
+    it('falls back to its own wording when the failure carries no message', async () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {})
+      const wrapper = await pageWith(makeSystem(1, 'GitHub'))
+      updateFeedMock.mockRejectedValueOnce(new Error('network down'))
+
+      await pressSwitch(wrapper)
+      await flushPromises()
+
+      expect(currentBanner.value?.kind).toBe('error')
+      expect(currentBanner.value?.message).toContain('pause')
+    })
+
+    it('marks only the affected feed busy while the request is in flight', async () => {
+      const wrapper = await pageWith(makeSystem(1, 'GitHub'), makeSystem(2, 'Datadog'))
+      let release: (value: Feed) => void = () => {}
+      updateFeedMock.mockReturnValueOnce(
+        new Promise<Feed>((resolve) => {
+          release = resolve
+        }),
+      )
+
+      await pressSwitch(wrapper, 0)
+
+      const cards = wrapper.findAllComponents(SystemCard)
+      expect(cards[0].props('busy')).toBe(true)
+      expect(cards[1].props('busy')).toBe(false)
+
+      release(makeFeed(1, 'GitHub'))
+      await flushPromises()
+
+      expect(wrapper.findAllComponents(SystemCard)[0].props('busy')).toBe(false)
+    })
+
+    it('ignores a second press while the first is still in flight', async () => {
+      const wrapper = await pageWith(makeSystem(1, 'GitHub'))
+      let release: (value: Feed) => void = () => {}
+      updateFeedMock.mockReturnValueOnce(
+        new Promise<Feed>((resolve) => {
+          release = resolve
+        }),
+      )
+
+      await pressSwitch(wrapper)
+      await pressSwitch(wrapper)
+      await pressSwitch(wrapper)
+
+      expect(updateFeedMock).toHaveBeenCalledTimes(1)
+
+      release(makeFeed(1, 'GitHub'))
       await flushPromises()
     })
   })

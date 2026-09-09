@@ -11,6 +11,9 @@ export type ApiErrorBody = components['schemas']['Error']
 /** The create payload, straight from the contract — no hand-written shape to drift. */
 export type SubscribeFeedRequest = components['schemas']['SubscribeFeedRequest']
 
+/** The partial-update payload: omitted fields are left unchanged by the backend. */
+export type UpdateFeedRequest = components['schemas']['UpdateFeedRequest']
+
 /**
  * A request that did not succeed. serverMessage is the contract's Error.message when the
  * backend sent one — it is written for humans, so callers may show it verbatim.
@@ -73,6 +76,21 @@ export async function subscribeFeed(input: SubscribeFeedRequest): Promise<Feed> 
   const { data, error, response } = await client.POST('/feeds', { body: input })
   if (error || !response.ok || !data) {
     throw fail('add integration', response, error)
+  }
+  return data
+}
+
+/**
+ * Changes one or more fields of an existing feed. Only what is passed is touched, which is
+ * what makes the on/off switch a single-field request.
+ */
+export async function updateFeed(feedId: number, patch: UpdateFeedRequest): Promise<Feed> {
+  const { data, error, response } = await client.PATCH('/feeds/{feedId}', {
+    params: { path: { feedId } },
+    body: patch,
+  })
+  if (error || !response.ok || !data) {
+    throw fail(`update feed ${feedId}`, response, error)
   }
   return data
 }

@@ -85,6 +85,10 @@ func (r *pollRepo) CreateFeed(_ context.Context, f domain.Feed) (domain.Feed, er
 	return f, nil
 }
 
+func (r *pollRepo) UpdateFeed(context.Context, int64, domain.UpdateFeedInput) (domain.Feed, error) {
+	return domain.Feed{}, nil
+}
+
 func (r *pollRepo) outcomeFor(feedID int64) domain.PollResult {
 	r.mu.Lock()
 	defer r.mu.Unlock()

@@ -178,6 +178,14 @@ type SystemOverview struct {
 	LastUpdatedAt *time.Time `json:"last_updated_at,omitempty"`
 }
 
+// UpdateFeedRequest Partial update; omitted fields are left unchanged.
+type UpdateFeedRequest struct {
+	Enabled            *bool   `json:"enabled,omitempty"`
+	GroupId            *int64  `json:"group_id,omitempty"`
+	RefreshIntervalSec *int    `json:"refresh_interval_sec,omitempty"`
+	Title              *string `json:"title,omitempty"`
+}
+
 // FeedId defines model for FeedId.
 type FeedId = int64
 
@@ -208,11 +216,17 @@ type ListFeedItemsParams struct {
 // SubscribeFeedJSONRequestBody defines body for SubscribeFeed for application/json ContentType.
 type SubscribeFeedJSONRequestBody = SubscribeFeedRequest
 
+// UpdateFeedJSONRequestBody defines body for UpdateFeed for application/json ContentType.
+type UpdateFeedJSONRequestBody = UpdateFeedRequest
+
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
 	// SubscribeFeed Subscribe to a new feed.
 	// (POST /feeds)
 	SubscribeFeed(w http.ResponseWriter, r *http.Request)
+	// UpdateFeed Update a feed (title, group, cadence, enabled).
+	// (PATCH /feeds/{feedId})
+	UpdateFeed(w http.ResponseWriter, r *http.Request, feedId FeedId)
 	// ListFeedItems List a feed's status items (incidents), newest first.
 	// (GET /feeds/{feedId}/items)
 	ListFeedItems(w http.ResponseWriter, r *http.Request, feedId FeedId, params ListFeedItemsParams)
@@ -235,6 +249,32 @@ func (siw *ServerInterfaceWrapper) SubscribeFeed(w http.ResponseWriter, r *http.
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.SubscribeFeed(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// UpdateFeed operation middleware
+func (siw *ServerInterfaceWrapper) UpdateFeed(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "feedId" -------------
+	var feedId FeedId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "feedId", r.PathValue("feedId"), &feedId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "feedId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.UpdateFeed(w, r, feedId)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -435,6 +475,7 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/overview", wrapper.GetOverview)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/feeds", wrapper.SubscribeFeed)
+	m.HandleFunc(http.MethodPatch+" "+options.BaseURL+"/feeds/{feedId}", wrapper.UpdateFeed)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/feeds/{feedId}/items", wrapper.ListFeedItems)
 
 	return m

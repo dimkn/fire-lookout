@@ -6,7 +6,7 @@ info:
     Backend↔frontend contract for the local status-page reader. This is the single
     source of truth (AGENTS.md §3, §6): the Go server stubs and the TypeScript client
     are generated from this file and must never be hand-edited.
-  version: 0.7.1 # tracks the root VERSION file (AGENTS.md §7)
+  version: 0.9.1 # tracks the root VERSION file (AGENTS.md §7)
 
 servers:
   - url: /api

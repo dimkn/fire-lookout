@@ -121,4 +121,30 @@ describe('SystemList', () => {
 
     expect(wrapper.getComponent(SystemCard).props('items')).toEqual([])
   })
+
+  it('marks only the busy feeds as busy', () => {
+    const wrapper = mount(SystemList, {
+      props: {
+        systems: [makeSystem(1, 'GitHub', 'outage'), makeSystem(2, 'Datadog', 'degraded')],
+        busyFeedIds: [2],
+      },
+    })
+
+    const cards = wrapper.findAllComponents(SystemCard)
+    expect(cards[0].props('busy')).toBe(false)
+    expect(cards[1].props('busy')).toBe(true)
+  })
+
+  it('forwards a card’s request to flip its switch', async () => {
+    const wrapper = mount(SystemList, {
+      props: { systems: [makeSystem(1, 'GitHub', 'outage'), makeSystem(2, 'Datadog', 'degraded')] },
+    })
+
+    await wrapper
+      .findAllComponents(SystemCard)[1]
+      .findAll('.system-card__actions button')[2]
+      .trigger('click')
+
+    expect(wrapper.emitted('setEnabled')).toEqual([[{ feedId: 2, enabled: false }]])
+  })
 })

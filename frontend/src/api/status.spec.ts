@@ -2,13 +2,14 @@ import type { Mock } from 'vitest'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { client } from './client'
-import { fetchFeedItems, fetchOverview, subscribeFeed } from './status'
+import { fetchFeedItems, fetchOverview, subscribeFeed, updateFeed } from './status'
 import type { Feed, StatusItem, SystemOverview } from './status'
 
-vi.mock('./client', () => ({ client: { GET: vi.fn(), POST: vi.fn() } }))
+vi.mock('./client', () => ({ client: { GET: vi.fn(), POST: vi.fn(), PATCH: vi.fn() } }))
 
 const get = client.GET as unknown as Mock
 const post = client.POST as unknown as Mock
+const patch = client.PATCH as unknown as Mock
 
 /** A bare response, the way a proxy or a dead backend answers: status only, no body. */
 const res = (status: number) => new Response(null, { status })
@@ -187,5 +188,56 @@ describe('subscribeFeed', () => {
         refresh_interval_sec: 300,
       }),
     ).rejects.toThrow(/500/)
+  })
+})
+
+describe('updateFeed', () => {
+  beforeEach(() => {
+    patch.mockReset()
+  })
+
+  // The switch is one field: nothing else may be sent, or an omitted value could be
+  // overwritten with whatever the frontend last happened to hold.
+  it('sends only the fields it was given', async () => {
+    patch.mockResolvedValue({
+      data: {
+        id: 7,
+        url: 'https://a.test/feed.atom',
+        title: 'GitHub',
+        group_id: 0,
+        enabled: false,
+        refresh_interval_sec: 300,
+        created_at: '2026-08-26T12:00:00Z',
+        updated_at: '2026-08-26T12:00:00Z',
+      },
+      response: res(200),
+    })
+
+    const updated = await updateFeed(7, { enabled: false })
+
+    expect(patch).toHaveBeenCalledWith('/feeds/{feedId}', {
+      params: { path: { feedId: 7 } },
+      body: { enabled: false },
+    })
+    expect(updated.enabled).toBe(false)
+  })
+
+  it('surfaces the server message so the banner can show it', async () => {
+    patch.mockResolvedValue({
+      error: { code: 'not_found', message: 'That integration no longer exists.' },
+      response: res(404),
+    })
+
+    await expect(updateFeed(99, { enabled: true })).rejects.toMatchObject({
+      status: 404,
+      code: 'not_found',
+      serverMessage: 'That integration no longer exists.',
+    })
+  })
+
+  it('throws when the response carries no usable body', async () => {
+    patch.mockResolvedValue({ data: undefined, error: undefined, response: res(500) })
+
+    await expect(updateFeed(7, { enabled: false })).rejects.toThrow(/500/)
   })
 })

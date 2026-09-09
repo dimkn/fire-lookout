@@ -177,6 +177,59 @@ func (r *Repository) CreateFeed(ctx context.Context, feed domain.Feed) (domain.F
 	return created, nil
 }
 
+// UpdateFeed applies a partial update. The statement is one fixed string rather than a SET
+// clause assembled per call: `COALESCE(?, column)` keeps the stored value when the parameter
+// is NULL, which is exactly "leave this field alone". That keeps the SQL static — nothing is
+// concatenated — and every value stays a bound parameter.
+func (r *Repository) UpdateFeed(ctx context.Context, id int64, in domain.UpdateFeedInput) (domain.Feed, error) {
+	var (
+		title    any
+		groupID  any
+		interval any
+		enabled  any
+	)
+	if in.Title != nil {
+		title = *in.Title
+	}
+	if in.GroupID != nil {
+		groupID = *in.GroupID
+	}
+	if in.RefreshInterval != nil {
+		interval = int64(in.RefreshInterval.Seconds())
+	}
+	if in.Enabled != nil {
+		if *in.Enabled {
+			enabled = 1
+		} else {
+			enabled = 0
+		}
+	}
+
+	res, err := r.db.ExecContext(ctx, `
+		UPDATE feed
+		SET title                = COALESCE(?, title),
+		    group_id             = COALESCE(?, group_id),
+		    refresh_interval_sec = COALESCE(?, refresh_interval_sec),
+		    enabled              = COALESCE(?, enabled),
+		    updated_at           = ?
+		WHERE id = ?`,
+		title, groupID, interval, enabled,
+		formatTime(time.Now().UTC().Truncate(time.Second)), id)
+	if err != nil {
+		return domain.Feed{}, conflictOrError(err)
+	}
+
+	changed, err := res.RowsAffected()
+	if err != nil {
+		return domain.Feed{}, fmt.Errorf("update feed %d: %w", id, err)
+	}
+	if changed == 0 {
+		return domain.Feed{}, fmt.Errorf("feed %d: %w", id, domain.ErrNotFound)
+	}
+
+	return r.GetFeed(ctx, id)
+}
+
 // conflictOrError translates a unique-constraint violation into the matching domain
 // sentinel. The driver only reports these as message text, so the column name is matched
 // on a substring — the alternative would be a second query to work out which index fired.

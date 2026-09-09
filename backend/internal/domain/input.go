@@ -94,6 +94,35 @@ type UpdateFeedInput struct {
 	Enabled         *bool
 }
 
+// IsEmpty reports an update that would change nothing.
+func (in UpdateFeedInput) IsEmpty() bool {
+	return in.Title == nil && in.GroupID == nil && in.RefreshInterval == nil && in.Enabled == nil
+}
+
+// Sanitize trims and checks the fields that were actually supplied, leaving the rest alone.
+// The rules match Sanitize on SubscribeInput, so a value that could be created can also be
+// updated to.
+func (in UpdateFeedInput) Sanitize() (UpdateFeedInput, error) {
+	out := in
+
+	if out.Title != nil {
+		trimmed := strings.TrimSpace(*out.Title)
+		if trimmed == "" {
+			return UpdateFeedInput{}, ValidationError{Field: "title", Message: "Name must not be empty."}
+		}
+		out.Title = &trimmed
+	}
+
+	if out.RefreshInterval != nil && *out.RefreshInterval < MinRefreshInterval {
+		return UpdateFeedInput{}, ValidationError{
+			Field:   "refresh_interval_sec",
+			Message: "Refresh interval must be a positive number of seconds.",
+		}
+	}
+
+	return out, nil
+}
+
 // CreateGroupInput is the data needed to create a new group.
 type CreateGroupInput struct {
 	Name     string

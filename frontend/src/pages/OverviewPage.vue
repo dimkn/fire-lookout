@@ -1,8 +1,14 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 
-import type { StatusItem, SystemOverview } from '@/api/status'
-import { fetchFeedItems, fetchOverview, RequestError, subscribeFeed } from '@/api/status'
+import type { StatusItem, SubscribeFeedRequest, SystemOverview } from '@/api/status'
+import {
+  fetchFeedItems,
+  fetchOverview,
+  RequestError,
+  subscribeFeed,
+  updateFeed,
+} from '@/api/status'
 import AddIntegrationDialog from '@/components/AddIntegrationDialog/AddIntegrationDialog.vue'
 import SystemList from '@/components/SystemList/SystemList.vue'
 import PageToolbar from '@/components/PageToolbar/PageToolbar.vue'
@@ -14,6 +20,7 @@ const itemsByFeed = ref<Record<number, StatusItem[]>>({})
 const refreshing = ref(false)
 const addOpen = ref(false)
 const saving = ref(false)
+const togglingFeedIds = ref<number[]>([])
 
 onMounted(async () => {
   try {
@@ -80,7 +87,7 @@ function closeAdd() {
   addOpen.value = false
 }
 
-async function saveIntegration(input: { title: string; url: string }) {
+async function saveIntegration(input: SubscribeFeedRequest) {
   if (saving.value) {
     return
   }
@@ -108,6 +115,31 @@ async function saveIntegration(input: { title: string; url: string }) {
   }
 }
 
+// Flipping the pause switch. The row's new colour comes from the backend — a paused system
+// reports "unknown" — so the list is re-read rather than patched up here.
+async function setEnabled({ feedId, enabled }: { feedId: number; enabled: boolean }) {
+  if (togglingFeedIds.value.includes(feedId)) {
+    return
+  }
+  togglingFeedIds.value = [...togglingFeedIds.value, feedId]
+
+  try {
+    await updateFeed(feedId, { enabled })
+    systems.value = await fetchOverview()
+  } catch (error) {
+    // No success banner: the row visibly changes colour, which says it better than a message
+    // would. A failure has nothing to show, so it has to be announced.
+    console.error(error)
+    const message =
+      error instanceof RequestError && error.serverMessage
+        ? error.serverMessage
+        : `Could not ${enabled ? 'resume' : 'pause'} that integration.`
+    notifyError(message)
+  } finally {
+    togglingFeedIds.value = togglingFeedIds.value.filter((id) => id !== feedId)
+  }
+}
+
 // The new system is stored but the dashboard renders the overview read model, so re-read it
 // rather than deriving a row here — which light a system shows is the backend's decision.
 async function reloadAfterAdd() {
@@ -125,7 +157,13 @@ async function reloadAfterAdd() {
     <PageToolbar :refreshing="refreshing" @refresh="refresh" @add="addIntegration" />
 
     <div class="overview__systems">
-      <SystemList :systems="systems" :items-by-feed="itemsByFeed" @expand="loadItems" />
+      <SystemList
+        :systems="systems"
+        :items-by-feed="itemsByFeed"
+        :busy-feed-ids="togglingFeedIds"
+        @expand="loadItems"
+        @set-enabled="setEnabled"
+      />
     </div>
 
     <AddIntegrationDialog

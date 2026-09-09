@@ -38,6 +38,10 @@ type fakeRepo struct {
 	created        domain.Feed
 	createCalls    int
 	gotURLLookup   string
+	updated        domain.UpdateFeedInput
+	updateCalls    int
+	updateErr      error
+	updatedFeed    domain.Feed
 	gotTitleLookup string
 }
 
@@ -72,6 +76,17 @@ func (r *fakeRepo) CreateFeed(_ context.Context, feed domain.Feed) (domain.Feed,
 	stored.ID = 42
 	stored.CreatedAt = ts("2026-08-24T12:00:00Z")
 	stored.UpdatedAt = stored.CreatedAt
+	return stored, nil
+}
+
+func (r *fakeRepo) UpdateFeed(_ context.Context, id int64, in domain.UpdateFeedInput) (domain.Feed, error) {
+	r.updateCalls++
+	r.updated = in
+	if r.updateErr != nil {
+		return domain.Feed{}, r.updateErr
+	}
+	stored := r.updatedFeed
+	stored.ID = id
 	return stored, nil
 }
 
@@ -135,7 +150,7 @@ func TestOverviewAsksForEntriesAsOfNow(t *testing.T) {
 // This is the Cloudflare case.
 func TestOverviewIgnoresFeedsWhoseOnlyEntriesAreStillToCome(t *testing.T) {
 	repo := &fakeRepo{
-		feeds: []domain.Feed{{ID: 1, Title: "Cloudflare", LastSuccessAt: ptr(ts(nowForReads))}},
+		feeds: []domain.Feed{{ID: 1, Title: "Cloudflare", Enabled: true, LastSuccessAt: ptr(ts(nowForReads))}},
 		// The repository already applied the as-of filter, so nothing comes back.
 		latest: nil,
 	}
@@ -171,9 +186,9 @@ func TestFeedItemsAsksForEntriesAsOfNow(t *testing.T) {
 func TestOverviewAssemblesOneRowPerFeed(t *testing.T) {
 	repo := &fakeRepo{
 		feeds: []domain.Feed{
-			{ID: 1, Title: "GitHub", LastSuccessAt: ptr(ts("2026-08-18T09:00:00Z"))},
-			{ID: 2, Title: "Datadog", LastSuccessAt: ptr(ts("2026-08-18T09:00:00Z"))},
-			{ID: 3, Title: "Never polled"},
+			{ID: 1, Title: "GitHub", Enabled: true, LastSuccessAt: ptr(ts("2026-08-18T09:00:00Z"))},
+			{ID: 2, Title: "Datadog", Enabled: true, LastSuccessAt: ptr(ts("2026-08-18T09:00:00Z"))},
+			{ID: 3, Title: "Never polled", Enabled: true},
 		},
 		latest: []domain.StatusItem{
 			{ID: 10, FeedID: 1, Status: domain.StatusInvestigating, PublishedAt: ts("2026-08-18T08:00:00Z")},
