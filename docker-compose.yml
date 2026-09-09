@@ -1,0 +1,28 @@
+# Local dev convenience: the whole tool as one service (AGENTS.md §1).
+#
+#	docker compose up --build -d     # http://localhost:8080
+#	docker compose logs -f
+#	docker compose down              # keeps the database; add -v to wipe it
+
+services:
+  rss-reader:
+    build:
+      context: .
+      dockerfile: infra/Dockerfile
+    image: rss-reader:local
+    ports:
+      # Override when :8080 is already taken by a `go run` dev backend:
+      #   RSS_READER_PORT=8081 docker compose up -d
+      - "${RSS_READER_PORT:-8080}:8080"
+    environment:
+      # RSS_READER_ADDR and RSS_READER_DB are baked into the image; this one is the knob
+      # worth reaching for — how often the scheduler looks for feeds that are due.
+      RSS_READER_POLL_TICK: 15s
+    volumes:
+      # Named, so the SQLite database (plus its -wal/-shm sidecars) survives a restart or a
+      # rebuild. The container runs as uid 65532, which owns /data in the image.
+      - rss-reader-data:/data
+    restart: unless-stopped
+
+volumes:
+  rss-reader-data:

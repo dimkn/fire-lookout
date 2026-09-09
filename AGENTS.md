@@ -35,7 +35,11 @@ hand-written.
 ├── README.md                      # Short pointer to this file.
 ├── VERSION                        # Single semver version for the whole tool.
 ├── .gitignore
+├── .dockerignore                  # Build context trimming (context = repo root).
 ├── docker-compose.yml             # Local dev convenience (one service).
+│
+├── docs/                          # Longer-form notes that would bloat this file.
+│   └── security-hardening.md      # Reviewed security findings, as shippable slices.
 │
 ├── api/
 │   └── openapi.yaml               # THE contract. Single source of truth for BE↔FE.
@@ -43,13 +47,16 @@ hand-written.
 ├── backend/                       # Go module. Hexagonal architecture.
 │   ├── go.mod / go.sum
 │   ├── cmd/
-│   │   └── status-page/           # main(): wires adapters, embeds FE assets, serves.
+│   │   └── status-page/           # main(): wires adapters, mounts /api + the SPA, serves.
 │   └── internal/
 │       ├── domain/                # Entities + PORTS (interfaces). No external deps.
 │       ├── application/           # Use cases (fetch feeds, expose status). Orchestrates ports.
 │       └── adapters/              # Implementations of ports (the "hexagon" edges).
 │           ├── httpapi/           # DRIVING adapter: oapi-codegen stdlib net/http handlers.
 │           ├── scheduler/         # DRIVING adapter: the clock that runs the poller.
+│           ├── webui/             # DRIVING adapter: serves the SPA embedded in the binary.
+│           │   └── dist/          # Vite output, filled in by the Docker build. Gitignored
+│           │                      # except .gitkeep, which keeps go:embed compiling.
 │           ├── feed/              # DRIVEN adapter: gofeed-backed feed fetcher.
 │           └── storage/           # DRIVEN adapter: SQLite repository.
 │               └── migrations/    # Embedded *.sql schema migrations (goose).
@@ -105,6 +112,8 @@ hand-written.
   - `adapters/` — concrete implementations that plug into ports:
     - `httpapi/` — **driving** side. Generated `net/http` server (Go 1.22+ `ServeMux`)
       from OpenAPI via `oapi-codegen`; thin handlers delegate to application use cases.
+    - `webui/` — **driving** side. Serves the Vue SPA embedded in the binary (see
+      **Serving the frontend** below). Touches no application code.
     - `feed/` — **driven** side. Wraps `gofeed` behind the `FeedFetcher` port.
     - `storage/` — **driven** side. Implements `StatusRepository` on a local SQLite
       database via stdlib `database/sql` with the pure-Go `modernc.org/sqlite` driver
@@ -112,6 +121,24 @@ hand-written.
 - **Dependency direction:** adapters → application → domain. Never the reverse. Wiring
   happens only in `cmd/status-page/main.go`.
 - **HTTP server:** stdlib `net/http` only. No web framework (no gin/echo/chi).
+- **Serving the frontend.** One process serves both pillars on one origin, which is why
+  `frontend/src/api/client.ts` can use a bare `/api` base URL and no CORS exists anywhere.
+  `main.go` composes a root `ServeMux`: `"/api/"` gets the generated router, `"/"` gets
+  `webui`. `"/api/"` is the more specific pattern, so the SPA fallback can never swallow an
+  API request and an unknown `/api/...` path still 404s.
+  - The assets are compiled in with `//go:embed all:dist` from
+    `internal/adapters/webui/dist/`. **`go:embed` cannot reach outside the module** and Go
+    must not read `frontend/` (golden rule 6), so `infra/Dockerfile` copies `frontend/dist`
+    into that directory between the two build stages. A committed `dist/.gitkeep` (the
+    `all:` prefix is what makes embed accept a dotfile-only directory) keeps
+    `go build ./...` compiling on a clean checkout; everything else there is gitignored.
+  - A binary built outside Docker therefore has **no UI**, which is the normal dev case, not
+    an error: `webui.NewHandler` returns `ErrNotBuilt`, `main.go` logs one warning and serves
+    the API alone while Vite hosts the UI on :5173.
+  - Caching: `/assets/*` is content-hashed by Vite and served `immutable` for a year;
+    `index.html` and everything else is `no-cache`. A missing file *with* an extension 404s
+    rather than falling back, so a broken build shows up as a 404 instead of a confusing
+    MIME-type error in the browser.
 - **Storage:** a single SQLite database file under a configurable data directory
   (defaults to `./data/fire-lookout.db`, gitignored), opened in **WAL mode** with **foreign
   keys enforced** — both pinned in the DSN, which FK `ON DELETE` actions depend on:
@@ -302,12 +329,17 @@ hand before committing.)
 
 ## 7. Versioning workflow
 
-- The whole tool has **one semver version**, stored in the root **`VERSION`** file
-  (currently `0.0.1`).
+- The whole tool has **one semver version**, stored in the root **`VERSION`** file.
 - It is the single source of truth:
   - **Backend** — injected at build time via `-ldflags "-X main.version=$(cat VERSION)"`.
-  - **Frontend** — injected at build time via a Vite `define` / env var.
-  - **Docker image** — tagged with it.
+    Surfaces in the startup log line and the feed fetcher's User-Agent.
+  - **Frontend** — read from `../VERSION` by `vite.config.ts` and injected as
+    `__APP_VERSION__`; `App.vue` renders it as `data-app-version`.
+  - **Contract** — mirrored into `api/openapi.yaml` `info.version`. It is not emitted into
+    either generated file (`embedded-spec: false`), so bumping it causes no codegen drift.
+  - **Docker image** — tagged with it. `infra/Dockerfile` reads `VERSION` out of the build
+    context rather than taking a `--build-arg`, so the baked-in version cannot drift from
+    the file.
 - **Bump `VERSION`** as part of any change that alters observable behavior, following
   semver (MAJOR breaking / MINOR feature / PATCH fix). CI verifies the value is a valid
   semver string.
@@ -341,6 +373,8 @@ Verified against the repo. Keep them accurate — agents rely on this section.
     env `RSS_READER_DB`), `-poll-tick` (default `15s`, env `RSS_READER_POLL_TICK`) — how often
     the scheduler looks for due feeds, *not* a feed's cadence.
   - The poller runs in-process alongside the API and stops with it.
+  - Logs `no frontend in this binary` and serves the API only — expected outside Docker.
+    Run `corepack yarn dev` alongside for the UI.
 - Test: `go test ./...`
 - Vet: `go vet ./...`
 - Lint: `golangci-lint run` (config: `backend/.golangci.yml`; requires golangci-lint ≥ v2;
@@ -367,10 +401,26 @@ Verified against the repo. Keep them accurate — agents rely on this section.
 - Build static: `corepack yarn build`
 - Storybook / Playwright: not set up yet (see §5).
 
-**Infra**
-- Not scaffolded yet: `infra/Dockerfile` and `docker-compose.yml` do not exist, and the backend
-  does not embed `frontend/dist` (a `go:embed` of a missing directory would not compile). Until
-  they land, run the two dev commands above side by side.
+**Infra** (repo root)
+- Run it: `docker compose up --build -d` → the whole tool on <http://localhost:8080>, API and
+  UI on one origin. `docker compose logs -f`, `docker compose down` (add `-v` to wipe the
+  database).
+  - Port already taken by a `go run` dev backend? `RSS_READER_PORT=8081 docker compose up -d`.
+- Build the image by hand: `docker build -t rss-reader:$(cat VERSION) -f infra/Dockerfile .`
+  - **The build context is the repo root, not `infra/`** — `frontend/vite.config.ts` reads
+    `../VERSION` and the backend stage needs both pillars.
+- Three stages: `node:22-alpine` builds the SPA (Node 22 still bundles Corepack; 25 dropped
+  it) → `golang:1.26-alpine` embeds it and builds a static binary (`CGO_ENABLED=0` works
+  because the SQLite driver is pure Go) → `gcr.io/distroless/static-debian12:nonroot`.
+  Result is ≈24 MB on disk / ≈6 MB compressed.
+- The database lives on the named volume `rss-reader-data` at `/data`. The container runs as
+  uid **65532**, and `/data` is created in the builder and copied in with that ownership —
+  Docker seeds a fresh named volume from the image's ownership at the mount point, so
+  skipping that step leaves a root-owned volume the process cannot write its WAL into.
+- Debugging: distroless has no shell, so `docker compose exec` will not work. Inspect the
+  volume from outside instead:
+  `docker run --rm -v rss-reader_rss-reader-data:/v alpine ls -lan /v`.
+- Not wired up yet: no `HEALTHCHECK`, and `.github/workflows/ci.yml` is still a `.gitkeep`.
 
 ---
 
@@ -379,5 +429,7 @@ Verified against the repo. Keep them accurate — agents rely on this section.
 - **Generated code** — `backend/internal/adapters/httpapi/*.gen.go` and
   `frontend/src/api/schema.gen.ts`. Change `api/openapi.yaml` and regenerate instead. (The rest
   of `frontend/src/api/` — `client.ts`, `status.ts` — *is* hand-written; see §5.)
-- **Build output** — `backend/bin/`, `frontend/dist/`, `frontend/storybook-static/`.
+- **Build output** — `backend/bin/`, `frontend/dist/`, `frontend/storybook-static/`, and
+  `backend/internal/adapters/webui/dist/` (the Docker build fills it; only `.gitkeep` is
+  committed, and it must stay — `go:embed` will not compile without it).
 - **Local runtime data** — `./data/` (gitignored SQLite database + `-wal`/`-shm` sidecar files).
